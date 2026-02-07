@@ -1,0 +1,1208 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{physics}
+\usepackage{bm}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,decorations.pathmorphing}
+
+\newcommand{\KL}{\mathrm{D}_{\mathrm{KL}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\Ftrue}{F_{\mathrm{true}}}
+\newcommand{\Fvar}{F_{\mathrm{var}}}
+\newcommand{\sgn}{\operatorname{sign}}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\title{Discrete Normalizing Flows as Variational Ans\"atze\\for Classical Statistical Mechanics}
+\author{Notes}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We discuss the generalization of autoregressive variational ans\"atze for
+classical statistical mechanics---originally formulated over raw spin
+variables---to autoregressive models over \emph{transformed tokens}.  We
+identify discrete normalizing flows as the natural framework that
+preserves the key property of exact, tractable log-probabilities while
+allowing learned, expressive transformations of the configuration space.
+We describe the architecture, the joint training procedure, and discuss
+the physical content that the learned flow may reveal, including
+connections to the renormalization group, duality transformations,
+topological defect encoding, and computational complexity of phases.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Background: autoregressive variational free energy}
+\label{sec:background}
+%======================================================================
+
+Consider a classical spin system on a lattice of $N$ sites with
+configuration $\bm{\sigma} = (\sigma_1, \ldots, \sigma_N)$, where each
+$\sigma_i \in \{-1, +1\}$ (Ising case), and energy function
+$E(\bm{\sigma})$.  The Boltzmann distribution at inverse temperature
+$\beta = 1/T$ is
+\begin{equation}
+  p(\bm{\sigma}) = \frac{1}{Z} e^{-\beta E(\bm{\sigma})},
+  \qquad
+  Z = \sum_{\bm{\sigma}} e^{-\beta E(\bm{\sigma})}.
+\end{equation}
+
+Wu et al.~\cite{wu2019} proposed using autoregressive neural networks as
+variational ans\"atze.  The variational distribution factorizes as
+\begin{equation}
+  q_\theta(\bm{\sigma})
+  = \prod_{i=1}^{N} q_\theta(\sigma_i \mid \sigma_{<i}),
+  \label{eq:ar-factorization}
+\end{equation}
+where each conditional is parameterized by a neural network (MADE,
+PixelCNN, or RNN).  The variational free energy
+\begin{equation}
+  \Fvar[q]
+  = \langle E(\bm{\sigma}) \rangle_q + T \langle \ln q(\bm{\sigma}) \rangle_q
+  \geq \Ftrue
+  \label{eq:var-free-energy}
+\end{equation}
+provides a rigorous upper bound on the true free energy $\Ftrue = -T \ln Z$.
+
+The crucial property of \eqref{eq:ar-factorization} is that
+$\ln q_\theta(\bm{\sigma}) = \sum_i \ln q_\theta(\sigma_i \mid
+\sigma_{<i})$ is \emph{exact and tractable}, so both terms in
+\eqref{eq:var-free-energy} can be estimated unbiasedly by sampling from
+$q_\theta$.  Gradients are computed via the REINFORCE (policy gradient)
+estimator:
+\begin{equation}
+  \nabla_\theta \Fvar
+  = \E_{q_\theta}\!\Big[
+    \big(E(\bm{\sigma}) + T \ln q_\theta(\bm{\sigma})\big)\,
+    \nabla_\theta \ln q_\theta(\bm{\sigma})
+  \Big].
+  \label{eq:reinforce}
+\end{equation}
+
+%======================================================================
+\section{Motivation: autoregression over transformed tokens}
+\label{sec:motivation}
+%======================================================================
+
+The factorization~\eqref{eq:ar-factorization} is tied to a particular
+ordering of the raw spin variables.  For systems with complex
+correlation structures---especially near phase transitions, in frustrated
+systems, or in the presence of topological defects---this raw-spin
+factorization may be suboptimal.  One expects that a more natural set of
+variables exists in which the autoregressive conditionals are simpler.
+
+Several choices of transformed tokens are natural:
+\begin{enumerate}[label=(\roman*)]
+  \item \textbf{Block-spin tokens:} partition the lattice into blocks,
+    label each block state as a single token.
+  \item \textbf{Fourier-mode tokens:} factorize autoregressively in
+    momentum space, generating modes from low-$k$ to high-$k$.
+  \item \textbf{Wavelet tokens:} use a multiscale decomposition,
+    generating coarse scales before fine scales.
+  \item \textbf{Learned discrete tokens (VQ-VAE):} learn a discrete
+    codebook via a vector-quantized autoencoder.
+  \item \textbf{Domain-wall / defect tokens:} re-express configurations
+    in terms of topological defects.
+\end{enumerate}
+
+The central question is whether such generalizations can maintain the
+\emph{rigorous variational bound} of~\eqref{eq:var-free-energy}.
+
+%======================================================================
+\section{The rigour problem with latent-variable models}
+\label{sec:rigour}
+%======================================================================
+
+The VQ-VAE approach defines a generative model with latent tokens
+$\bm{z} = (z_1, \ldots, z_K)$:
+\begin{equation}
+  q(\bm{\sigma})
+  = \sum_{\bm{z}} p_\theta(\bm{z})\, p_\phi(\bm{\sigma} \mid \bm{z}),
+  \label{eq:vqvae-marginal}
+\end{equation}
+where $p_\theta(\bm{z}) = \prod_k p_\theta(z_k \mid z_{<k})$ is an
+autoregressive prior and $p_\phi(\bm{\sigma} \mid \bm{z})$ is a
+decoder.  The marginal~\eqref{eq:vqvae-marginal} is \emph{intractable}:
+evaluating $\ln q(\bm{\sigma})$ requires summing over all latent
+sequences.  This breaks the rigorous bound.
+
+\subsection{Attempted fix: joint variational bound}
+
+Introducing a reference distribution $r(\bm{z})$ and using
+$\KL(q(\bm{\sigma}, \bm{z}) \,\|\, p_{\mathrm{Boltz}}(\bm{\sigma})
+\cdot r(\bm{z})) \geq 0$ with $r(\bm{z}) = p_\theta(\bm{z})$ yields:
+\begin{equation}
+  \boxed{%
+    \Ftrue \leq
+    \langle E(\bm{\sigma}) \rangle_q
+    + T \langle \ln p_\phi(\bm{\sigma} \mid \bm{z}) \rangle_q
+  }
+  \label{eq:joint-bound}
+\end{equation}
+This is a rigorous, tractable upper bound.  However, the gap between
+\eqref{eq:joint-bound} and the true variational free energy $\Fvar[q]$
+is
+\begin{equation}
+  \Delta = T \cdot I_q(\bm{\sigma};\, \bm{z}),
+\end{equation}
+the mutual information between spins and tokens under the joint model.
+For a good generative model this mutual information is large
+(potentially extensive in $N$), rendering the bound impractically loose.
+
+\subsection{Attempted fix: ELBO + importance sampling}
+
+Using an encoder $q_\psi(\bm{z} \mid \bm{\sigma})$, the standard ELBO
+gives a \emph{lower} bound on $\ln q(\bm{\sigma})$:
+\begin{equation}
+  \ln q(\bm{\sigma})
+  \geq \E_{q_\psi(\bm{z}|\bm{\sigma})}\!\big[
+    \ln p_\phi(\bm{\sigma}|\bm{z})
+    + \ln p_\theta(\bm{z})
+    - \ln q_\psi(\bm{z}|\bm{\sigma})
+  \big].
+\end{equation}
+Substituting this into~\eqref{eq:var-free-energy} gives a quantity
+$\tilde{F} \leq \Fvar[q]$, which is \emph{not} a valid upper bound on
+$\Ftrue$.  One can evaluate $q(\bm{\sigma})$ via importance sampling
+after training, yielding a consistent estimator of $\Fvar[q]$, but not a
+strict bound at finite sample size.
+
+%======================================================================
+\section{Discrete normalizing flows: the rigorous solution}
+\label{sec:discrete-flows}
+%======================================================================
+
+The key insight is to replace the lossy VQ-VAE with a \emph{bijective}
+discrete transformation.  Since the map is a bijection on a finite set,
+no marginalization is needed and $\ln q(\bm{\sigma})$ remains exact.
+
+\subsection{Setup}
+
+Let $\bm{z} \in \{\pm 1\}^N$ denote latent spins and $\bm{\sigma} \in
+\{\pm 1\}^N$ denote physical spins.  Define:
+\begin{itemize}
+  \item A \textbf{base distribution} $p_{\theta}(\bm{z}) = \prod_k
+    p_{\theta}(z_k \mid z_{<k})$, an autoregressive model with
+    parameters~$\theta$.
+  \item A \textbf{discrete flow} $f_\phi : \{\pm 1\}^N \to \{\pm
+    1\}^N$, a learnable bijection parameterized by~$\phi$.
+\end{itemize}
+The variational distribution over physical spins is
+\begin{equation}
+  q(\bm{\sigma})
+  = p_{\theta}\!\big(f_\phi^{-1}(\bm{\sigma})\big),
+  \label{eq:flow-distribution}
+\end{equation}
+and
+\begin{equation}
+  \ln q(\bm{\sigma})
+  = \ln p_{\theta}(\bm{z})
+  = \sum_{k=1}^{N} \ln p_{\theta}(z_k \mid z_{<k}),
+  \qquad \bm{z} = f_\phi^{-1}(\bm{\sigma}).
+  \label{eq:exact-logprob}
+\end{equation}
+No Jacobian correction is needed: for a bijection on a finite set, the
+``Jacobian'' is identically~1.
+
+\begin{proposition}
+The variational free energy
+$\Fvar[q] = \langle E(\bm{\sigma}) \rangle_q + T \langle \ln
+q(\bm{\sigma}) \rangle_q$ with $q$ defined
+by~\eqref{eq:flow-distribution} provides a rigorous upper bound on
+$\Ftrue$ and can be evaluated exactly (up to sampling noise) via
+\begin{equation}
+  \Fvar = \E_{\bm{z} \sim p_{\theta}}\!\Big[
+    E\!\big(f_\phi(\bm{z})\big)
+    + T \ln p_{\theta}(\bm{z})
+  \Big].
+  \label{eq:Fvar-pullback}
+\end{equation}
+\end{proposition}
+
+\subsection{Coupling layers for binary spins}
+\label{sec:coupling}
+
+We construct $f_\phi$ as a composition of $L$ \emph{discrete coupling
+layers}, each of which is bijective by construction.
+
+\paragraph{Single layer.}
+Partition the $N$ sites into two groups $(A, B)$ (e.g., a checkerboard
+partition on a square lattice).  A coupling layer acts as:
+\begin{equation}
+  \sigma_A = z_A, \qquad
+  \sigma_B = z_B \odot m_\phi(z_A),
+  \label{eq:coupling-layer}
+\end{equation}
+where $m_\phi : \{\pm 1\}^{|A|} \to \{\pm 1\}^{|B|}$ is a neural
+network that outputs a conditional \emph{flip mask}, and $\odot$ denotes
+elementwise multiplication.  Since $(\pm 1)^2 = +1$, the inverse is
+identical:
+\begin{equation}
+  z_B = \sigma_B \odot m_\phi(\sigma_A), \qquad z_A = \sigma_A.
+\end{equation}
+
+\paragraph{Composition.}
+The full flow is
+\begin{equation}
+  f_\phi = f^{(L)} \circ f^{(L-1)} \circ \cdots \circ f^{(1)},
+\end{equation}
+alternating which sites belong to group~$A$ and group~$B$ at each layer.
+Each $f^{(l)}$ has its own mask network with parameters $\phi^{(l)}
+\subset \phi$.
+
+\paragraph{Algebraic interpretation.}
+In the $\F_2$ representation ($\{0,1\}$ with XOR), each coupling layer
+implements a conditional affine transformation: $\sigma_B = z_B \oplus
+m_\phi(z_A)$.  The space of all such compositions forms a subgroup of
+$\mathrm{Aut}(\F_2^N)$.  The flow searches for an element of this group
+such that the Boltzmann distribution, expressed in the coordinates
+$\bm{z} = f_\phi^{-1}(\bm{\sigma})$, admits the simplest
+autoregressive factorization.
+
+\subsection{Physical interpretation of a coupling layer}
+\label{sec:physical-interp}
+
+The algebraic definition~\eqref{eq:coupling-layer} has a transparent
+physical meaning.  Consider a square lattice with the checkerboard
+partition: group~$A$ is one sublattice (say the black squares) and
+group~$B$ is the other (white squares).  The coupling layer examines
+\emph{all} the black spins and, for each white spin independently,
+decides whether to flip it.  The mask network $m_\phi(z_A)$ encodes
+this decision rule.
+
+\paragraph{As a deterministic sublattice update.}
+The simplest useful mask aligns each white spin with its local field
+from the black neighbours.  If site $i \in B$ has local field
+$h_i = J \sum_{j \in A,\, j \sim i} z_j$, then
+\begin{equation}
+  m_i = \sgn(h_i)
+  \label{eq:mean-field-mask}
+\end{equation}
+flips $z_{B,i}$ to point along the local field.  This is a
+\emph{deterministic mean-field update on one sublattice}---one
+half-sweep of iterative conditional modes.  The learned mask network can
+go well beyond this: it sees the \emph{entire} $A$-sublattice
+configuration and can make non-local, context-dependent flip decisions.
+
+\paragraph{Alternating refinement.}
+Stacking layers with alternating partitions yields the structure shown
+in Table~\ref{tab:layers}.  Each layer refines one sublattice
+conditioned on the other---\emph{deterministic alternating Gibbs
+sampling} with learned update rules.
+
+\begin{table}[h]
+\centering
+\caption{Alternating sublattice updates in a composition of coupling layers.}
+\label{tab:layers}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Layer} & \textbf{Reads} & \textbf{Updates} & \textbf{Correlations resolved} \\
+\midrule
+1 & black sublattice & white sublattice & nearest-neighbour $A$--$B$ \\
+2 & white (corrected) & black sublattice & next-nearest-neighbour $A$--$A$ via $B$ \\
+3 & black (corrected) & white sublattice & $\sim 3$ lattice spacings \\
+$\vdots$ & $\vdots$ & $\vdots$ & $\vdots$ \\
+$l$ & --- & --- & $\sim l$ lattice spacings \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The correlation range captured by the flow grows linearly with
+depth:
+\begin{equation}
+  \xi_{\mathrm{eff}} \sim L_{\mathrm{flow}}.
+  \label{eq:xi-vs-depth}
+\end{equation}
+This is the direct origin of the scaling $L^\ast \sim \xi \sim |T -
+T_c|^{-\nu}$ discussed in Sec.~\ref{sec:physics}: the flow must be at
+least as deep as the correlation length is long.
+
+\paragraph{Action on defects.}
+The inverse flow $f_\phi^{-1}$ maps physical configurations to the
+latent space.  Its action on defects is instructive:
+\begin{itemize}
+  \item \textbf{Smooth domains} (all spins aligned) pass through nearly
+    unchanged---all masks are close to $+1$.
+  \item \textbf{Domain walls} are progressively straightened, shrunk,
+    or moved to a canonical position.  Each layer peels away one
+    ``layer of roughness'' from the wall.
+  \item \textbf{Point defects} (a single flipped spin in a uniform
+    background) are absorbed: the mask flips them back, mapping the
+    configuration to the uniform state in $\bm{z}$-space.
+\end{itemize}
+The forward flow does the reverse: starting from a simple latent
+configuration, it \emph{grows} defects layer by layer---first placing
+them roughly, then refining their shape and position.
+
+\paragraph{Frustration increases per-layer difficulty.}
+For an unfrustrated bipartite lattice (e.g.\ the ferromagnetic square
+Ising model), each $B$-spin wants to align with all its $A$-neighbours
+and there is no conflict; the local-field mask~\eqref{eq:mean-field-mask}
+already does a good job.  For a frustrated system (triangular
+antiferromagnet, spin glass), each $B$-spin receives contradictory
+signals from its $A$-neighbours.  The mask network must learn a
+complex, non-local compromise, requiring larger networks and deeper
+flows---reflecting the intrinsic computational hardness of the
+frustrated phase.
+
+\paragraph{Summary.}
+A discrete coupling layer is a \emph{learned, deterministic,
+sublattice-conditional spin update}: the discrete analogue of one
+half-sweep of Gibbs sampling, optimised end-to-end so that the full
+composition maps a simple base distribution to the target Boltzmann
+distribution.
+
+%======================================================================
+\section{Joint training procedure}
+\label{sec:training}
+%======================================================================
+
+The trainable parameters are $\theta$ (base AR model) and $\phi$
+(flow coupling networks).  The objective~\eqref{eq:Fvar-pullback} is
+minimized by gradient descent.  The two parameter groups play very
+different roles, and their gradients have different structures.
+
+\subsection{Gradient with respect to $\theta$ (base AR model)}
+
+Both the sampling distribution and the integrand depend on $\theta$.
+Applying the REINFORCE identity:
+\begin{equation}
+  \nabla_{\theta} \Fvar
+  = \E_{p_{\theta}}\!\bigg[
+    \Big(E\!\big(f_\phi(\bm{z})\big)
+    + T \ln p_{\theta}(\bm{z})\Big)\;
+    \nabla_{\theta} \ln p_{\theta}(\bm{z})
+  \bigg].
+  \label{eq:grad-theta}
+\end{equation}
+This is the standard policy-gradient estimator from~\cite{wu2019}.
+Variance reduction via a learned baseline $b(\bm{z}_{<k})$ is essential:
+\begin{equation}
+  \nabla_{\theta} \Fvar
+  \approx \frac{1}{M} \sum_{m=1}^{M}
+  \Big(R^{(m)} - b\Big)\,
+  \nabla_{\theta} \ln p_{\theta}(\bm{z}^{(m)}),
+  \qquad
+  R^{(m)} = E(\bm{\sigma}^{(m)}) + T \ln p_{\theta}(\bm{z}^{(m)}).
+\end{equation}
+
+\subsection{Gradient with respect to $\phi$ (flow parameters)}
+
+This gradient has a qualitatively different structure.  Recall the
+objective pulled back to latent space:
+\begin{equation}
+  \Fvar
+  = \E_{\bm{z} \sim p_\theta}\!\Big[
+    \underbrace{E\!\big(f_\phi(\bm{z})\big)}_{\text{depends on } \phi}
+    + \underbrace{T \ln p_\theta(\bm{z})}_{\text{independent of } \phi}
+  \Big].
+  \label{eq:Fvar-phi-view}
+\end{equation}
+Two key observations:
+\begin{enumerate}
+  \item The sampling distribution $p_\theta(\bm{z})$ does not depend on
+    $\phi$, so we can move $\nabla_\phi$ inside the expectation without
+    a REINFORCE correction.
+  \item The entropy term $T \ln p_\theta(\bm{z})$ does not depend on
+    $\phi$ at all---the flow does not change which latent configuration
+    was drawn, only where it lands in physical space.
+\end{enumerate}
+Therefore:
+\begin{equation}
+  \nabla_\phi \Fvar
+  = \E_{p_{\theta}}\!\Big[
+    \nabla_\phi E\!\big(f_\phi(\bm{z})\big)
+  \Big].
+  \label{eq:grad-phi}
+\end{equation}
+The entropy drops out entirely: \emph{the flow is optimised purely by
+rearranging which latent configuration maps to which physical
+configuration, so as to lower the expected energy.}
+
+\paragraph{The discrete barrier.}
+Equation~\eqref{eq:grad-phi} looks like a standard backpropagation
+problem, but there is a fundamental obstacle.  Inside each coupling
+layer, the mask is computed as
+\begin{equation}
+  m_i = \sgn\!\big(g_\phi(z_A)_i\big) \in \{\pm 1\},
+\end{equation}
+where $g_\phi$ is a neural network with continuous outputs.  As $\phi$
+varies continuously, $g_\phi$ changes smoothly, but $\sgn(\cdot)$ snaps
+to $\pm 1$.  The composed map $f_\phi(\bm{z})$ is therefore a
+\emph{piecewise-constant} function of $\phi$: it takes discrete values
+and is flat almost everywhere, with discontinuous jumps at the boundaries
+where some $g_\phi(z_A)_i$ crosses zero.  Consequently,
+$\nabla_\phi E(f_\phi(\bm{z})) = 0$ almost everywhere in the
+conventional sense---standard backpropagation yields no gradient signal.
+
+We employ one of the following relaxations to obtain a useful training
+signal:
+
+\paragraph{Straight-through estimator (STE).}
+In the forward pass, compute hard masks $m_i = \sgn(g_\phi(z_A)_i)$.
+In the backward pass, replace $\sgn'$ by the identity, so that gradients
+flow through the mask network as if $m_i \approx g_\phi(z_A)_i$:
+\begin{equation}
+  \frac{\partial m_i}{\partial g_i}\bigg|_{\mathrm{STE}} = 1.
+\end{equation}
+This is biased but empirically effective.  Gradients backpropagate
+through the full composition $f^{(L)} \circ \cdots \circ f^{(1)}$.
+
+\paragraph{Gumbel--softmax relaxation.}
+During training, replace the hard mask with a continuous surrogate:
+\begin{equation}
+  \tilde{m}_i
+  = \tanh\!\bigg(
+    \frac{g_\phi(z_A)_i + (\xi_1 - \xi_2)}{\tau}
+  \bigg),
+  \qquad \xi_{1,2} \sim \mathrm{Gumbel}(0,1),
+\end{equation}
+and anneal $\tau \to 0$ over training.  At $\tau = 0$, the exact
+discrete flow is recovered.
+
+\paragraph{Decoupling property.}
+A key simplification: the gradient for $\theta$ does not require
+differentiating through the flow, and the gradient for $\phi$ does not
+require REINFORCE.  The two parameter groups can be updated with
+different optimizers and learning rates.
+
+\subsection{Training algorithm}
+
+\begin{algorithm}[H]
+\caption{Joint training of autoregressive base + discrete flow}
+\label{alg:training}
+\begin{algorithmic}[1]
+\Require Base AR network $p_{\theta}$, flow layers $\{f^{(l)}_\phi\}_{l=1}^L$, temperature $T$, batch size $M$
+\For{each training step}
+  \State Sample $\bm{z}^{(m)} \sim p_{\theta}(\bm{z})$ for $m = 1, \ldots, M$
+    \hfill\Comment{Autoregressive sampling}
+  \State Compute $\bm{\sigma}^{(m)} = f_\phi(\bm{z}^{(m)})$
+    \hfill\Comment{Forward through flow (hard masks)}
+  \State Compute $\ln q^{(m)} = \sum_k \ln p_{\theta}(z^{(m)}_k \mid z^{(m)}_{<k})$
+    \hfill\Comment{Exact log-probability}
+  \State Compute local free energy $R^{(m)} = E(\bm{\sigma}^{(m)}) + T \ln q^{(m)}$
+  \State \textbf{Update $\theta$:} $\theta \leftarrow \theta - \alpha_\theta \cdot \frac{1}{M}\sum_m (R^{(m)} - b)\, \nabla_{\theta}\ln p_{\theta}(\bm{z}^{(m)})$
+    \hfill\Comment{REINFORCE}
+  \State \textbf{Update $\phi$:} $\phi \leftarrow \phi - \alpha_\phi \cdot \frac{1}{M}\sum_m \nabla_\phi E(\tilde{f}_\phi(\bm{z}^{(m)}))$
+    \hfill\Comment{STE backward pass}
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+%======================================================================
+\section{Physical content of the learned flow}
+\label{sec:physics}
+%======================================================================
+
+The learned bijection $f_\phi$ is an interpretable object: it defines a
+\emph{change of variables} in configuration space that the model finds
+optimal for representing the Boltzmann distribution.  We discuss several
+ways in which this transformation encodes non-trivial physics.
+
+\subsection{Emergent renormalization group}
+
+If the flow is structured hierarchically---e.g., layer~1 acts on
+nearest-neighbor pairs, layer~2 on $2\times 2$ blocks, layer~3 on
+$4\times 4$ blocks---then the composition implements a multiscale
+transformation.  The base distribution captures an effective theory at
+the coarsest scale.
+
+\paragraph{Diagnostic 1: self-similarity at criticality.}
+At the RG fixed point $T = T_c$, the flow parameters should become
+approximately self-similar across scales: the mask networks at different
+layers should implement statistically similar transformations.  Away from
+$T_c$, deep layers contribute little because correlations are
+short-range, and the flow effectively ``terminates early.''
+
+\paragraph{Diagnostic 2: effective degrees of freedom.}
+The base-distribution entropy $H[p_{\theta}]$ at each scale gives an
+estimate of the effective number of degrees of freedom, analogous to the
+$c$-function in the Zamolodchikov $c$-theorem.  One can track how
+$H[p_{\theta}]$ varies with temperature and system size to extract
+scaling exponents.
+
+\subsection{Kramers--Wannier duality}
+
+The 2D Ising model on a square lattice possesses a duality
+transformation $\mathcal{D}$ that maps high-temperature configurations
+(spins) to low-temperature configurations (domain walls), with the
+self-dual point at $T_c$.
+
+\begin{itemize}
+  \item A flow trained at $T_c$ should approximate $\mathcal{D}$ (or its
+    composition with a simple transformation), since the self-dual
+    distribution has enhanced symmetry that the flow can exploit.
+  \item One can test this by examining the flow's action on known
+    configurations (all-up, checkerboard, single domain wall) and
+    comparing with the analytical Kramers--Wannier map.
+  \item More generally, for models with known dualities (Potts, gauge--Higgs),
+    the learned flow may \emph{rediscover} the duality transformation,
+    providing a data-driven route to non-obvious dualities.
+\end{itemize}
+
+\subsection{Topological defect encoding}
+
+In ordered phases, the dominant excitations are topological defects
+(domain walls in the Ising model, vortices in the XY model, monopoles in
+gauge theories).  A well-trained flow should map configurations to a
+latent space where:
+\begin{enumerate}
+  \item A small number of latent variables encode the \emph{number and
+    topology} of defects (their winding numbers, connectivity, etc.).
+  \item The remaining latent variables encode \emph{smooth deformations}
+    of defect positions and shapes.
+\end{enumerate}
+This can be tested by feeding configurations with known defect content
+through $f_\phi^{-1}$ and examining the latent representation.
+Configurations with the same defect topology should map to nearby regions
+in $\bm{z}$-space.
+
+\subsection{Flow depth as a probe of computational complexity}
+
+The minimum flow depth $L^\ast$ required to achieve a given free-energy
+accuracy is a measure of the \emph{circuit complexity} of the Boltzmann
+distribution.
+
+\paragraph{Unfrustrated systems.}
+For the ferromagnetic Ising model, we expect $L^\ast \sim \xi$, where
+$\xi \sim |T - T_c|^{-\nu}$ is the correlation length.  At $T_c$,
+$L^\ast$ diverges with system size as $L^\ast \sim N^{\nu/d}$.
+
+\paragraph{Frustrated / glassy systems.}
+For the Sherrington--Kirkpatrick model or other spin glasses, $L^\ast$
+may grow much faster---potentially exponentially in $N$---reflecting the
+NP-hardness of the ground-state problem.  Mapping out $L^\ast(T, N)$ as
+a ``computational phase diagram'' could reveal transitions in
+computational complexity that coincide with (or differ from)
+thermodynamic phase boundaries.
+
+\subsection{Disentanglement of order parameter and fluctuations}
+
+Near a phase transition, the physically relevant decomposition is:
+\begin{equation}
+  \bm{\sigma}
+  = \underbrace{\bar{\bm{\sigma}}(\text{order parameter})}_{
+    \text{first few } z_k}
+  + \underbrace{\delta\bm{\sigma}(\text{fluctuations})}_{
+    \text{remaining } z_k}.
+\end{equation}
+If the base AR model generates the first few $z_k$ first, one can check:
+\begin{itemize}
+  \item Do the leading latent variables encode the magnetization?
+  \item Is the conditional $p(z_{k+1}, \ldots \mid z_1, \ldots, z_k)$
+    approximately Gaussian for intermediate~$k$ (Landau--Ginzburg regime)?
+  \item Does the mutual-information bottleneck---identifying which latent
+    variables carry the most information about the energy---shift at
+    $T_c$?
+\end{itemize}
+
+\subsection{The flow as non-equilibrium dynamics}
+
+The flow $f_\phi$ defines a deterministic map from a simple
+(high-temperature-like) base distribution to the target Boltzmann
+distribution.  Layer by layer, it ``cools'' the system.  The
+intermediate distributions
+\begin{equation}
+  q_l(\bm{\sigma})
+  = p_{\theta}\!\big((f^{(l)} \circ \cdots \circ f^{(1)})^{-1}(\bm{\sigma})\big),
+  \qquad l = 1, \ldots, L,
+\end{equation}
+trace out a path in the space of probability distributions.  One can
+measure the free-energy change at each layer,
+\begin{equation}
+  \Delta F_l = \Fvar[q_l] - \Fvar[q_{l-1}],
+\end{equation}
+and study whether the flow finds a quasi-static (reversible) path or a
+non-equilibrium shortcut.  This has natural connections to Jarzynski's
+equality and optimal transport.
+
+%======================================================================
+\section{Case study: the 2D Ising model at criticality}
+\label{sec:critical-ising}
+%======================================================================
+
+We now specialise the general framework to the square-lattice Ising model
+at $T_c = 2J / \ln(1 + \sqrt{2}) \approx 2.269\, J/k_B$ and develop
+concrete expectations for what the flow and the latent variables should
+learn.  This system is exactly solvable and described by the $c = 1/2$
+minimal-model conformal field theory (CFT), so sharp predictions are
+possible.
+
+\subsection{The challenge: no characteristic scale}
+
+Away from $T_c$, correlations decay as $\langle \sigma_i \sigma_j
+\rangle \sim e^{-|i-j|/\xi}$ with finite $\xi$, and a flow of depth
+$L \gtrsim \xi$ can capture all correlations.  At $T_c$, correlations
+are power-law,
+\begin{equation}
+  \langle \sigma_i \sigma_j \rangle \sim |i - j|^{-\eta},
+  \qquad \eta = \tfrac{1}{4},
+\end{equation}
+and $\xi \to \infty$.  No finite-depth flow suffices: every layer
+matters, and the flow can never fully decorrelate the latent variables.
+
+\subsection{What the flow does: progressive smoothing of fractal domain walls}
+
+At $T_c$, domain walls are fractal curves described by
+$\mathrm{SLE}_3$ (Schramm--Loewner evolution with $\kappa = 3$, fractal
+dimension $d_f = 11/8$).  The inverse flow $f_\phi^{-1} : \bm{\sigma}
+\to \bm{z}$ acts as a progressive \emph{simplifier}:
+\begin{itemize}
+  \item \textbf{Layer~1} (reads black sublattice, flips white): removes
+    roughness at the 1-lattice-spacing scale.  Domain walls become
+    slightly smoother.
+  \item \textbf{Layer~2} (reads white, flips black): removes roughness
+    at the 2-spacing scale.
+  \item \textbf{Layer~$l$}: removes fluctuations at scale $\sim l$.
+\end{itemize}
+After $L$ layers, the latent configuration $\bm{z}$ looks like a
+\emph{coarse-grained} version of $\bm{\sigma}$: the fractal domain
+walls have been straightened up to scale~$L$, but their large-scale
+topology is preserved.
+
+The forward flow $f_\phi : \bm{z} \to \bm{\sigma}$ does the reverse:
+starting from the smooth latent configuration, it progressively
+\emph{roughens} the domain walls, adding fractal detail at finer and
+finer scales---a constructive, layer-by-layer assembly of the critical
+microstate.
+
+\subsection{Self-similarity of the flow at $T_c$}
+
+Because the critical Ising model is scale-invariant, the fluctuations at
+scale~$l$ are statistically identical to those at scale~$l+1$ (up to
+rescaling).  This implies:
+\begin{enumerate}
+  \item The mask networks at different layers should learn
+    \textbf{statistically similar transformations}---each layer does the
+    ``same job'' at a different scale.
+  \item The free-energy reduction per layer,
+    \begin{equation}
+      \Delta F_l = \Fvar[q_l] - \Fvar[q_{l-1}],
+    \end{equation}
+    should be approximately \textbf{constant} across layers (or decay as
+    a slow power law $\sim l^{-(2-\eta)}$), reflecting the equal
+    importance of all scales.
+  \item Away from $T_c$, $\Delta F_l$ drops sharply for $l > \xi$---deep
+    layers become idle.  At $T_c$, \emph{no layer is idle}.
+\end{enumerate}
+The constant $\Delta F_l$ at criticality is the flow-level signature of
+scale invariance.
+
+\subsection{Division of labour between flow and base}
+
+The flow and the base AR model split the representational work along a
+\textbf{scale axis}:
+\begin{equation}
+  \underbrace{p_\theta(\bm{z})}_{\substack{\text{IR physics:}\\
+    \text{global topology,}\\ \text{order parameter}}}
+  \;\xrightarrow{\;f_\phi\;}
+  \underbrace{q(\bm{\sigma})}_{\text{full critical distribution}}.
+\end{equation}
+\begin{itemize}
+  \item The \textbf{flow} $f_\phi$ handles correlations at scales
+    $\lesssim L_{\mathrm{flow}}$: local spin alignment, domain-wall
+    geometry, short-range order.  This is the \emph{UV} (ultraviolet)
+    physics.
+  \item The \textbf{base} $p_\theta(\bm{z})$ handles correlations at
+    scales $\gtrsim L_{\mathrm{flow}}$: the global magnetisation sector,
+    large-scale domain topology, long-range order-parameter correlations.
+    This is the \emph{IR} (infrared) physics.
+\end{itemize}
+The flow is a \textbf{constructive renormalisation group}: it runs the RG
+\emph{backwards}, starting from the coarse (IR) description encoded in
+$\bm{z}$ and progressively adding fine (UV) detail.
+
+\subsection{Physical meaning of the latent variables}
+
+The autoregressive base generates $\bm{z} = (z_1, z_2, \ldots, z_N)$
+sequentially.  The first variables condition everything that follows, so
+the model assigns them the most important, most informative features.
+
+\paragraph{Early variables ($z_1, z_2, \ldots, z_{\mathrm{few}}$):
+global structure.}
+\begin{itemize}
+  \item $z_1$ should encode the \textbf{global $\mathbb{Z}_2$ sector}---the
+    overall sign of the magnetisation.  At $T_c$,
+    $p(z_1 = +1) \approx p(z_1 = -1) \approx 1/2$ (maximal
+    uncertainty).  This single bit is the most informative feature of a
+    critical configuration.
+  \item The next several $z_k$ encode the \textbf{large-scale domain
+    topology}: how many major domains exist, their rough spatial
+    arrangement, the coarse shape of the dominant domain wall.
+\end{itemize}
+
+\paragraph{Middle variables: progressive refinement.}
+These encode the domain-wall geometry at progressively finer scales---the
+``wavelet coefficients'' of the magnetisation field at intermediate
+wavelengths.  Each variable adds detail at a specific scale, like
+successive terms in a multiscale expansion.
+
+\paragraph{Late variables ($z_{N-\mathrm{few}}, \ldots, z_N$): thermal
+noise.}
+These are nearly independent of all preceding variables:
+$p(z_k \mid z_{<k}) \approx \mathrm{Bernoulli}(1/2)$.  They encode the
+finest-scale fluctuations that the flow could not fully decorrelate---the
+residual ``thermal noise.''
+
+\subsection{The conditional entropy profile as a diagnostic}
+
+The conditional entropy $H(z_k \mid z_{<k})$ measures how much new
+information each latent variable adds.  Its profile is a sharp diagnostic
+of the phase:
+
+\paragraph{At $T_c$ (critical).}
+$H(z_1) = \ln 2$ (the $\mathbb{Z}_2$ choice is maximally uncertain).
+$H(z_k \mid z_{<k})$ then decreases \textbf{slowly}---as a power
+law---because scale-invariant correlations mean there is always more
+structure to specify at the next scale.  The information is spread across
+all scales.
+
+\paragraph{Below $T_c$ (ordered).}
+$H(z_1) \ll \ln 2$ (the magnetisation is nearly determined).  The
+remaining conditional entropies drop quickly to $\approx \ln 2$ as the
+variables become trivial fluctuations around the ordered state.
+
+\paragraph{Above $T_c$ (disordered).}
+$H(z_k \mid z_{<k}) \approx \ln 2$ for all~$k$---the variables are
+nearly independent.  The base is close to a product distribution, and the
+flow does little.
+
+The \textbf{slow power-law decay of $H(z_k \mid z_{<k})$ at $T_c$} is
+the autoregressive fingerprint of criticality.
+
+\subsection{Connection to the CFT operator content}
+
+The critical 2D Ising model is described by the $c = 1/2$ minimal-model
+CFT with primary operators:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Operator} & \textbf{Conformal dimension $h$}
+  & \textbf{Physical meaning} \\
+\midrule
+$\mathbb{1}$ & 0 & Identity \\
+$\sigma$ & $1/16$ & Spin (order parameter) \\
+$\varepsilon$ & $1/2$ & Energy density \\
+\bottomrule
+\end{tabular}
+\end{center}
+The most relevant operator (lowest~$h$) is the spin field~$\sigma$.  The
+latent variables should encode the amplitudes of these operators in a
+hierarchical way:
+\begin{itemize}
+  \item \textbf{First latent variables}: amplitude of the spin
+    field~$\sigma$ at the longest wavelength---this is the
+    magnetisation.  The low conformal dimension $h = 1/16$ means it is
+    the most slowly decaying, most important mode.
+  \item \textbf{Next variables}: amplitude of the energy
+    density~$\varepsilon$ at long wavelengths, and the spin field at
+    shorter wavelengths.
+  \item \textbf{Deeper variables}: descendant operators (spatial
+    derivatives of primaries), encoding finer spatial structure.
+\end{itemize}
+The autoregressive ordering effectively implements a \textbf{spectral
+decomposition} of the critical distribution, ordered by relevance
+(conformal dimension).
+
+\subsection{What the latent configuration looks like}
+
+If one visualises $\bm{z}$ on the lattice:
+\begin{itemize}
+  \item \textbf{At $T_c$}: $\bm{z}$ should resemble a
+    \textbf{smoothed, coarse-grained} version of $\bm{\sigma}$.  The
+    large-scale domain structure is visible, but the fractal roughness of
+    domain walls has been removed.  It looks like the output of a
+    block-spin RG transformation applied $\sim L_{\mathrm{flow}}$ times.
+  \item \textbf{Below $T_c$}: $\bm{z}$ is nearly uniform (all $+1$ or
+    all $-1$), since the flow can build the few thermal excitations from
+    a simple base.
+  \item \textbf{Above $T_c$}: $\bm{z} \approx \bm{\sigma}$---the flow
+    has little to do, and the latent and physical configurations are
+    nearly identical.
+\end{itemize}
+
+\subsection{Summary: the flow as a constructive RG}
+
+\begin{equation}
+  \underbrace{z_1}_{\mathbb{Z}_2\text{ sector}}
+  \;\to\;
+  \underbrace{z_2, \ldots, z_k}_{\text{large-scale topology}}
+  \;\to\;
+  \underbrace{z_{k+1}, \ldots, z_K}_{\text{medium-scale detail}}
+  \;\to\;
+  \underbrace{z_{K+1}, \ldots, z_N}_{\text{thermal noise}}
+  \;\xrightarrow{\;f_\phi\;}
+  \;\bm{\sigma}
+\end{equation}
+The base AR model generates a coarse description of the critical
+configuration, ordered from the most relevant (IR) to the least relevant
+(UV) degrees of freedom.  The flow then dresses this coarse description
+with the geometric detail at all scales up to the lattice spacing.  At
+$T_c$, both components are maximally stressed: the base must capture
+power-law correlations, and the flow must build self-similar fractal
+structure at every scale.
+
+%======================================================================
+\section{Comparison of approaches}
+\label{sec:comparison}
+%======================================================================
+
+\begin{table}[h]
+\centering
+\caption{Comparison of token-based variational ans\"atze.}
+\label{tab:comparison}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Approach}
+  & \textbf{Rigorous bound on $F$?}
+  & \textbf{Tractable $\ln q(\bm{\sigma})$?}
+  & \textbf{Expressiveness} \\
+\midrule
+Raw-spin AR \cite{wu2019}
+  & Yes & Exact & Limited by ordering \\
+Block-spin AR (lossless)
+  & Yes & Exact & Limited by block partition \\
+VQ-VAE + AR prior
+  & Only via loose joint bound & No & High \\
+ELBO + importance sampling
+  & Asymptotically & Estimated & High \\
+\textbf{Discrete NF + AR base}
+  & \textbf{Yes} & \textbf{Exact} & \textbf{High (learned bijection)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%======================================================================
+\section{Suggested numerical experiments}
+\label{sec:experiments}
+%======================================================================
+
+As a concrete starting point, we propose the following experiments on the
+\textbf{2D Ising model} on an $L \times L$ square lattice with periodic
+boundary conditions:
+\begin{equation}
+  E(\bm{\sigma}) = -J \sum_{\langle ij \rangle} \sigma_i \sigma_j.
+\end{equation}
+
+\paragraph{Architecture.}
+\begin{itemize}
+  \item \textbf{Base model:} MADE network over $\bm{z} \in \{\pm 1\}^N$
+    with raster-scan ordering, hidden layers of width $4N$.
+  \item \textbf{Flow:} $L_{\mathrm{flow}} = 4$--$8$ coupling layers with
+    alternating checkerboard partitions; each mask network is a small
+    ConvNet (2--3 layers, $3\times 3$ kernels).
+  \item \textbf{System sizes:} $8 \times 8$, $16 \times 16$,
+    $32 \times 32$.
+\end{itemize}
+
+\paragraph{Training.}
+STE for flow gradients, REINFORCE with learned baseline for base-model
+gradients.  Sweep temperatures across $T_c \approx 2.269\, J/k_B$.
+
+\paragraph{Diagnostics.}
+\begin{enumerate}
+  \item Compare $\Fvar[q]$ against exact results (transfer matrix for
+    small $L$, Monte Carlo for larger $L$).
+  \item Plot base-distribution entropy $H[p_{\theta}]$ and
+    layer-by-layer free-energy reduction $\Delta F_l$ as functions of
+    $T$.
+  \item Feed configurations with known defect content (single domain
+    wall, vortex pair) through $f_\phi^{-1}$; visualize the latent
+    representation.
+  \item Measure the minimum flow depth $L^\ast$ needed for a target
+    accuracy $|\Fvar - \Ftrue| / N < \epsilon$ and plot $L^\ast(T)$.
+  \item At $T_c$, compare the learned flow with the Kramers--Wannier
+    transformation on test configurations.
+\end{enumerate}
+
+%======================================================================
+\section{Related work}
+\label{sec:related}
+%======================================================================
+
+The present proposal sits at the intersection of three lines of work:
+autoregressive variational methods for statistical mechanics, normalizing
+flows for lattice field theory, and discrete generative models in machine
+learning.  We survey each in turn and identify the gap that the discrete
+flow framework fills.
+
+\subsection{Autoregressive variational ans\"atze for spin systems}
+
+Wu, Wang, and Zhang~\cite{wu2019} introduced the use of autoregressive
+neural networks (PixelCNN, MADE) as variational ans\"atze for classical
+statistical mechanics, with exact log-probabilities enabling a rigorous
+variational free-energy bound.  Subsequent work has refined the
+autoregressive architecture: Biazzo, Wu, and
+Carleo~\cite{biazzo2024sparse} proposed the TwoBo architecture,
+incorporating knowledge of the two-body interaction structure into sparse
+autoregressive networks for frustrated systems with $>$1000 spins.
+Bialas, Korcyl, and Stebel~\cite{bialas2022hierarchical} introduced
+hierarchical associations between spins and neurons, achieving scaling
+with the linear extent~$L$ rather than the total number of spins.
+Pan and Zhang~\cite{pan2024messagepassingvan} augmented variational
+autoregressive networks with message passing to better capture spin-spin
+interactions.  All of these works use \emph{purely autoregressive}
+distributions without flow layers; the expressiveness is limited by the
+autoregressive factorization itself.
+
+\subsection{Normalizing flows for lattice field theory}
+
+Albergo, Kanwar, and Shanahan~\cite{albergo2019} pioneered the use of
+normalizing flows (specifically RealNVP affine coupling layers with
+checkerboard masking) for lattice field theory, demonstrating the method
+on $\phi^4$ scalar theory in 2D with \emph{continuous} field variables.
+Kanwar et al.~\cite{kanwar2020} extended this to gauge-equivariant flows
+for U(1) lattice gauge theory.  Nicoli et
+al.~\cite{nicoli2020,nicoli2021} showed that normalizing-flow samplers
+can estimate absolute free energies (not just differences) for
+continuous-field theories.  Comprehensive reviews of this programme are
+given in Refs.~\cite{albergo2021tutorial,cranmer2023review}.  A key
+limitation of this entire line of work is its restriction to
+\emph{continuous} degrees of freedom; discrete spin models are not
+directly addressed.
+
+\subsection{Neural network renormalization group}
+
+Li and Wang~\cite{li2018neuralrg} proposed the Neural Network
+Renormalization Group (NeuralRG), which uses normalizing flows in a
+hierarchical, multiscale architecture motivated by the RG.  The
+variational free energy provides a rigorous upper bound.  Applied to the
+2D Ising model, the method uses RealNVP coupling layers and therefore
+operates with a \emph{continuous relaxation} of the binary spin
+variables, rather than natively discrete transformations.
+
+\subsection{Discrete normalizing flows in machine learning}
+
+Tran et al.~\cite{tran2019} introduced discrete normalizing flows with
+two architectures: discrete autoregressive flows and discrete bipartite
+flows.  The bipartite flow uses a modular location-scale transform that
+reduces to XOR for binary variables---precisely the coupling
+layer~\eqref{eq:coupling-layer} used here.  They tested on Potts models
+as a benchmark, evaluating negative log-likelihood as a function of
+coupling strength.  However, their work frames the problem as
+\emph{density estimation} (maximum likelihood on samples), not as a
+variational statistical-mechanics problem: there is no free-energy
+objective, no rigorous bound on $F$, and no physical analysis of the
+learned flow.  Hoogeboom et al.~\cite{hoogeboom2019} proposed Integer
+Discrete Flows for lossless compression, using additive coupling with
+rounding for ordinal data, but did not target spin systems.
+
+\subsection{Boltzmann generators}
+
+No\'e et al.~\cite{noe2019} introduced Boltzmann generators---normalizing
+flows trained on the energy function to sample Boltzmann distributions
+for molecular systems.  This work operates entirely in continuous
+configuration space (molecular coordinates) and does not address discrete
+degrees of freedom.
+
+\subsection{Discrete flow matching and diffusion for spin systems}
+
+More recently, Tuo et al.~\cite{tuo2025} applied discrete flow matching
+to the Ising model, learning continuous-time transport maps from noisy
+distributions to the Boltzmann distribution.  This is fundamentally
+different from the bijective coupling-layer approach: flow matching does
+not use invertible transformations and does not provide the same type of
+exact variational bounds.  Ghio et al.~\cite{ghio2024} provided a
+theoretical analysis of flows, diffusion, and autoregressive methods for
+spin glasses, showing that these methods can encounter first-order phase
+transitions along the generative path that impede sampling---an important
+caveat for any flow-based approach in the glassy regime.
+
+\subsection{Positioning of the present proposal}
+
+Table~\ref{tab:literature} summarises the landscape.  Each existing
+approach addresses a subset of the desiderata; the present proposal
+combines discrete bijectivity (from~\cite{tran2019}), the variational
+free-energy framework (from~\cite{wu2019}), and the physical
+interpretability of normalizing flows (from~\cite{li2018neuralrg,
+albergo2019}).  What is new is the synthesis: discrete coupling layers
+operating \emph{natively} on binary spins, composed with an
+autoregressive base, trained via the variational free energy with
+rigorous bounds, and analysed for physical content (flow depth scaling,
+duality, defect encoding).
+
+\begin{table}[h]
+\centering
+\caption{Positioning of the discrete NF + AR base proposal relative to
+existing work.}
+\label{tab:literature}
+\begin{tabular}{lcccc}
+\toprule
+& \textbf{Discrete spins} & \textbf{Bijective flow}
+& \textbf{Rigorous $F$ bound} & \textbf{Learned transform} \\
+\midrule
+Wu et al.~\cite{wu2019} & \checkmark & --- & \checkmark & --- \\
+Albergo et al.~\cite{albergo2019} & --- & \checkmark & \checkmark & \checkmark \\
+Li \& Wang~\cite{li2018neuralrg} & relaxed & \checkmark & \checkmark & \checkmark \\
+Tran et al.~\cite{tran2019} & \checkmark & \checkmark & --- & \checkmark \\
+Tuo et al.~\cite{tuo2025} & \checkmark & --- & --- & \checkmark \\
+\textbf{This proposal} & \checkmark & \checkmark & \checkmark & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%======================================================================
+\section{Outlook}
+\label{sec:outlook}
+%======================================================================
+
+Several extensions are immediate:
+\begin{itemize}
+  \item \textbf{$q$-state Potts model.} The coupling layers generalize
+    to conditional permutations of $\{1, \ldots, q\}$, parameterized by
+    a network that outputs a permutation matrix (or its Gumbel--Sinkhorn
+    relaxation).
+  \item \textbf{Continuous spins (XY, Heisenberg).} Standard continuous
+    normalizing flows apply directly, with the full machinery of
+    coupling layers and affine transformations.
+  \item \textbf{Lattice gauge theories.} The coupling layers can be
+    adapted to respect gauge symmetry by acting on gauge-invariant
+    combinations (plaquettes, Wilson loops), following the approach of
+    Albergo et al.
+  \item \textbf{Quantum systems.} The variational free energy can be
+    replaced by the variational energy of a quantum Hamiltonian, with the
+    autoregressive model representing an amplitude (autoregressive neural
+    quantum state).
+\end{itemize}
+
+The discrete normalizing flow framework provides a principled,
+rigorous, and physically interpretable generalization of autoregressive
+variational methods.  The learned bijection is not merely a
+computational device---it is a window into the structure of the
+Boltzmann distribution, encoding renormalization, duality, and the
+organization of topological defects.
+
+\begin{thebibliography}{99}
+
+\bibitem{wu2019}
+D.~Wu, L.~Wang, and P.~Zhang,
+``Solving statistical mechanics using variational autoregressive
+networks,''
+\textit{Phys.\ Rev.\ Lett.}\ \textbf{122}, 080602 (2019).
+[arXiv:1809.10606]
+
+\bibitem{biazzo2024sparse}
+I.~Biazzo, D.~Wu, and G.~Carleo,
+``Sparse autoregressive neural networks for classical spin systems,''
+\textit{Mach.\ Learn.: Sci.\ Technol.}\ \textbf{5}, 045001 (2024).
+[arXiv:2402.16579]
+
+\bibitem{bialas2022hierarchical}
+P.~Bialas, P.~Korcyl, and T.~Stebel,
+``Hierarchical autoregressive neural networks for statistical systems,''
+\textit{Comput.\ Phys.\ Commun.}\ \textbf{281}, 108502 (2022).
+
+\bibitem{pan2024messagepassingvan}
+F.~Pan and P.~Zhang,
+``Message passing variational autoregressive network for solving
+intractable Ising models,''
+\textit{Commun.\ Phys.}\ \textbf{7}, 205 (2024).
+
+\bibitem{albergo2019}
+M.~S.~Albergo, G.~Kanwar, and P.~E.~Shanahan,
+``Flow-based generative models for Markov chain Monte Carlo in lattice
+field theory,''
+\textit{Phys.\ Rev.\ D}\ \textbf{100}, 034515 (2019).
+[arXiv:1904.12072]
+
+\bibitem{kanwar2020}
+G.~Kanwar, M.~S.~Albergo, D.~Boyda, K.~Cranmer, D.~C.~Hackett,
+S.~Racani\`ere, D.~J.~Rezende, and P.~E.~Shanahan,
+``Equivariant flow-based sampling for lattice gauge theory,''
+\textit{Phys.\ Rev.\ Lett.}\ \textbf{125}, 121601 (2020).
+[arXiv:2003.06413]
+
+\bibitem{nicoli2020}
+K.~A.~Nicoli, S.~Nakajima, N.~Strodthoff, W.~Samek, K.-R.~M\"uller,
+and P.~Kessel,
+``Asymptotically unbiased estimation of physical observables with neural
+samplers,''
+\textit{Phys.\ Rev.\ E}\ \textbf{101}, 023304 (2020).
+[arXiv:1910.13496]
+
+\bibitem{nicoli2021}
+K.~A.~Nicoli, C.~J.~Anders, L.~Funcke, T.~Hartung, K.~Jansen,
+S.~Kessel, S.~Nakajima, and P.~Stornati,
+``Estimation of thermodynamic observables in lattice field theories with
+deep generative models,''
+\textit{Phys.\ Rev.\ Lett.}\ \textbf{126}, 032001 (2021).
+[arXiv:2007.07115]
+
+\bibitem{albergo2021tutorial}
+M.~S.~Albergo, D.~Boyda, D.~C.~Hackett, G.~Kanwar, K.~Cranmer,
+S.~Racani\`ere, D.~J.~Rezende, and P.~E.~Shanahan,
+``Introduction to normalizing flows for lattice field theory,''
+arXiv:2101.08176 (2021).
+
+\bibitem{cranmer2023review}
+K.~Cranmer, G.~Kanwar, S.~Racani\`ere, D.~J.~Rezende, and
+P.~E.~Shanahan,
+``Advances in machine-learning-based sampling motivated by lattice
+quantum chromodynamics,''
+\textit{Nat.\ Rev.\ Phys.}\ \textbf{5}, 526--535 (2023).
+
+\bibitem{li2018neuralrg}
+S.-H.~Li and L.~Wang,
+``Neural network renormalization group,''
+\textit{Phys.\ Rev.\ Lett.}\ \textbf{121}, 260601 (2018).
+[arXiv:1802.02840]
+
+\bibitem{tran2019}
+D.~Tran, K.~Vafa, K.~K.~Agrawal, L.~Dinh, and B.~Poole,
+``Discrete flows: Invertible generative models of discrete data,''
+in \textit{Advances in Neural Information Processing Systems~32}
+(NeurIPS 2019).
+[arXiv:1905.10347]
+
+\bibitem{hoogeboom2019}
+E.~Hoogeboom, J.~W.~T.~Peters, R.~van~den~Berg, and M.~Welling,
+``Integer discrete flows and lossless compression,''
+in \textit{Advances in Neural Information Processing Systems~32}
+(NeurIPS 2019).
+[arXiv:1905.07376]
+
+\bibitem{noe2019}
+F.~No\'e, S.~Olsson, J.~K\"ohler, and H.~Wu,
+``Boltzmann generators: Sampling equilibrium states of many-body systems
+with deep learning,''
+\textit{Science}\ \textbf{365}, eaaw1147 (2019).
+[arXiv:1812.01729]
+
+\bibitem{tuo2025}
+H.~Tuo, H.~Zeng, Y.~Chen, and L.~Cheng,
+``Scalable multitemperature free energy sampling of classical Ising spin
+states,''
+arXiv:2503.08063 (2025).
+
+\bibitem{ghio2024}
+D.~Ghio, Y.~M.~Dandi, F.~Krzakala, and L.~Zdeborov\'a,
+``Sampling with flows, diffusion, and autoregressive neural networks:
+A spin-glass perspective,''
+\textit{Proc.\ Natl.\ Acad.\ Sci.\ USA}\ \textbf{121}, e2311810121
+(2024).
+[arXiv:2308.14085]
+
+\end{thebibliography}
+
+\end{document}
