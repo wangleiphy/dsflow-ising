@@ -237,8 +237,15 @@ def train_step(made_model, flow_model, pairs, J, T, batch_size,
     return new_state, metrics
 
 
-def train(model_cfg: ModelConfig, train_cfg: TrainConfig, log_every: int = 100):
+def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
+          log_every: int = 100, log_file: str = None):
     """Full training loop.
+
+    Args:
+        model_cfg: model configuration
+        train_cfg: training configuration
+        log_every: print to stdout every N steps
+        log_file: if provided, write CSV log (step, f_var, energy, entropy, baseline)
 
     Returns:
         state: final TrainState
@@ -251,16 +258,32 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig, log_every: int = 100):
     key = jax.random.PRNGKey(train_cfg.seed + 1)
     history = []
 
-    for i in range(train_cfg.num_steps):
-        key, subkey = jax.random.split(key)
-        state, metrics = train_step(
-            made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
-            train_cfg.batch_size, made_opt, flow_opt, state, subkey,
-        )
-        history.append(metrics)
+    fh = None
+    if log_file:
+        fh = open(log_file, 'w')
+        fh.write("step,f_var,energy,entropy,baseline\n")
 
-        if (i + 1) % log_every == 0:
-            print(f"Step {i+1}: F_var={metrics['f_var']:.4f}, "
-                  f"E={metrics['energy']:.4f}, S={metrics['entropy']:.4f}")
+    try:
+        for i in range(train_cfg.num_steps):
+            key, subkey = jax.random.split(key)
+            state, metrics = train_step(
+                made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
+                train_cfg.batch_size, made_opt, flow_opt, state, subkey,
+            )
+            history.append(metrics)
+
+            if fh:
+                fh.write(f"{i+1},{float(metrics['f_var']):.6f},"
+                         f"{float(metrics['energy']):.6f},"
+                         f"{float(metrics['entropy']):.6f},"
+                         f"{float(metrics['baseline']):.6f}\n")
+                fh.flush()
+
+            if (i + 1) % log_every == 0:
+                print(f"Step {i+1}: F_var={metrics['f_var']:.4f}, "
+                      f"E={metrics['energy']:.4f}, S={metrics['entropy']:.4f}")
+    finally:
+        if fh:
+            fh.close()
 
     return state, history, made_model, flow_model, pairs

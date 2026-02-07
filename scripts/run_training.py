@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--num-steps", type=int, default=10000, help="Number of training steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--log-every", type=int, default=100, help="Log interval")
+    parser.add_argument("--log-file", type=str, default=None, help="CSV log file path")
     args = parser.parse_args()
 
     model_cfg = ModelConfig(
@@ -44,7 +45,7 @@ def main():
     print(f"Total sites: {model_cfg.L**2}")
 
     state, history, made_model, flow_model, pairs = train(
-        model_cfg, train_cfg, log_every=args.log_every
+        model_cfg, train_cfg, log_every=args.log_every, log_file=args.log_file
     )
 
     # Final diagnostics
