@@ -21,4 +21,5 @@ class TrainConfig:
     lr_phi: float = 1e-3
     num_steps: int = 10000
     seed: int = 42
+    beta_anneal: float = 0.0  # Annealing rate: beta_eff = beta*(1 - beta_anneal**step), 0 = disabled
 

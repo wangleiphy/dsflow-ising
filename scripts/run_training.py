@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--made-hidden-dims", type=int, nargs='+', default=None,
                         help="MADE hidden layer sizes, e.g. --made-hidden-dims 512 512")
     parser.add_argument("--z2", action="store_true", help="Enable Z2 spin-flip symmetry")
+    parser.add_argument("--beta-anneal", type=float, default=0.0,
+                        help="Beta annealing rate (0=disabled, e.g. 0.998)")
     parser.add_argument("--log-every", type=int, default=100, help="Log interval")
     parser.add_argument("--log-file", type=str, default=None, help="CSV log file path")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
@@ -46,6 +48,7 @@ def main():
         lr_phi=args.lr_phi,
         num_steps=args.num_steps,
         seed=args.seed,
+        beta_anneal=args.beta_anneal,
     )
 
     print(f"Training: L={model_cfg.L}, layers={model_cfg.n_flow_layers}, "

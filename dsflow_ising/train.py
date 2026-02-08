@@ -45,21 +45,35 @@ def compute_loss(made_model, made_params, flow_model, flow_params,
 
 
 def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
-                    made_optimizer, flow_optimizer, z2=False):
+                    made_optimizer, flow_optimizer, z2=False,
+                    beta_anneal=0.0):
     """Create a JIT-compiled training step function.
+
+    When beta_anneal > 0, uses annealed inverse temperature:
+        beta_eff = (1/T) * (1 - beta_anneal^step)
+    This starts training at high temperature (easy) and gradually cools
+    to the target T, matching the VAN beta-annealing schedule.
 
     Returns a function: (state, key) -> (state, metrics)
     """
+    beta_target = 1.0 / T
 
     def _step(state, key):
         made_params, flow_params, made_opt, flow_opt, baseline, step = state
+
+        # Annealed effective temperature
+        if beta_anneal > 0:
+            beta_eff = beta_target * (1.0 - beta_anneal ** (step + 1))
+            T_eff = 1.0 / jnp.maximum(beta_eff, 1e-10)
+        else:
+            T_eff = T
 
         z_samples, z_log_probs = sample(
             made_model, made_params, key, num_samples=batch_size, z2=z2)
 
         sigma = flow_model.apply(flow_params, z_samples, use_ste=False)
         energies = jax.vmap(lambda s: energy(s, pairs, J))(sigma)
-        rewards = energies + T * z_log_probs
+        rewards = energies + T_eff * z_log_probs
         f_var = jnp.mean(rewards)
 
         advantage = rewards - jnp.mean(rewards)
@@ -81,20 +95,24 @@ def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
         flow_updates, new_flow_opt = flow_optimizer.update(flow_grads, flow_opt, flow_params)
         new_flow_params = optax.apply_updates(flow_params, flow_updates)
 
+        # Report F_var at the *target* temperature for fair comparison
+        f_var_target = jnp.mean(energies + T * z_log_probs)
+
         new_state = TrainState(
             made_params=new_made_params,
             flow_params=new_flow_params,
             made_opt_state=new_made_opt,
             flow_opt_state=new_flow_opt,
-            baseline=f_var,
+            baseline=f_var_target,
             step=step + 1,
         )
         metrics = {
-            'f_var': f_var,
+            'f_var': f_var_target,
             'energy': jnp.mean(energies),
             'entropy': -jnp.mean(z_log_probs),
-            'baseline': f_var,
+            'baseline': f_var_target,
             'mag': jnp.mean(sigma),
+            'T_eff': T_eff,
         }
         return new_state, metrics
 
@@ -139,11 +157,12 @@ def init_train_state(model_cfg: ModelConfig, train_cfg: TrainConfig):
 
 
 def train_step(made_model, flow_model, pairs, J, T, batch_size,
-               made_optimizer, flow_optimizer, state, key, z2=False):
+               made_optimizer, flow_optimizer, state, key, z2=False,
+               beta_anneal=0.0):
     """Single training step (convenience wrapper; builds and calls JIT step)."""
     step_fn = make_train_step(
         made_model, flow_model, pairs, J, T, batch_size,
-        made_optimizer, flow_optimizer, z2=z2,
+        made_optimizer, flow_optimizer, z2=z2, beta_anneal=beta_anneal,
     )
     return step_fn(state, key)
 
@@ -174,13 +193,14 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
     step_fn = make_train_step(
         made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
         train_cfg.batch_size, made_opt, flow_opt, z2=z2,
+        beta_anneal=train_cfg.beta_anneal,
     )
 
     fh = None
     if log_file:
         fh = open(log_file, 'w')
-        fh.write(f"# L={model_cfg.L} T={train_cfg.T} J={train_cfg.J}\n")
-        fh.write("step,f_var,energy,entropy,baseline,mag\n")
+        fh.write(f"# L={model_cfg.L} T={train_cfg.T} J={train_cfg.J} beta_anneal={train_cfg.beta_anneal}\n")
+        fh.write("step,f_var,energy,entropy,baseline,mag,T_eff\n")
 
     try:
         for i in range(train_cfg.num_steps):
@@ -193,7 +213,8 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
                          f"{float(metrics['energy']):.6f},"
                          f"{float(metrics['entropy']):.6f},"
                          f"{float(metrics['baseline']):.6f},"
-                         f"{float(metrics['mag']):.6f}\n")
+                         f"{float(metrics['mag']):.6f},"
+                         f"{float(metrics['T_eff']):.6f}\n")
                 fh.flush()
 
             if use_wandb:
@@ -206,7 +227,8 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
 
             if (i + 1) % log_every == 0:
                 print(f"Step {i+1}: F_var={metrics['f_var']:.4f}, "
-                      f"E={metrics['energy']:.4f}, S={metrics['entropy']:.4f}")
+                      f"E={metrics['energy']:.4f}, S={metrics['entropy']:.4f}, "
+                      f"T_eff={float(metrics['T_eff']):.4f}")
 
         if use_wandb:
             from dsflow_ising.diagnostics import (
