@@ -31,16 +31,6 @@ class MaskedDense(nn.Module):
         return x @ (kernel * self.mask) + bias
 
 
-class PReLU(nn.Module):
-    """Parametric ReLU with per-feature learnable slope, initialized to 0.5."""
-    features: int
-
-    @nn.compact
-    def __call__(self, x):
-        alpha = self.param('alpha', lambda key, shape: jnp.full(shape, 0.5), (self.features,))
-        return jnp.where(x >= 0, x, alpha * x)
-
-
 class MADE(nn.Module):
     """Masked Autoencoder for Distribution Estimation over ±1 spins.
 
@@ -48,10 +38,10 @@ class MADE(nn.Module):
     Output logit_k depends only on z_0, ..., z_{k-1}.
     logit_k > 0 means p(z_k = +1 | z_{<k}) > 0.5.
 
-    Masking follows VAN's block-channel convention:
-      - Each hidden unit h is assigned site h % N
-      - Input→hidden (exclusive): input site i < hidden site h % N
-      - Hidden→hidden/output (non-exclusive): prev site <= next site
+    Masking scheme:
+      - Hidden units get orders arange(h_dim) % (N-1), spread across [0, N-2]
+      - Input→hidden: prev_order <= hidden_order (non-exclusive)
+      - Hidden→output: hidden_order < output_order (exclusive)
     """
     n_sites: int
     hidden_dims: Sequence[int] = ()
@@ -60,28 +50,22 @@ class MADE(nn.Module):
         N = self.n_sites
         hdims = self.hidden_dims if self.hidden_dims else (4 * N,)
 
-        input_site = jnp.arange(N)
+        input_order = jnp.arange(N)
 
         masks = []
-        prev_site = input_site
-        exclusive = True
+        prev_order = input_order
 
         for h_dim in hdims:
-            hidden_site = jnp.arange(h_dim) % N
-            if exclusive:
-                mask = (prev_site[:, None] < hidden_site[None, :]).astype(jnp.float32)
-                exclusive = False
-            else:
-                mask = (prev_site[:, None] <= hidden_site[None, :]).astype(jnp.float32)
+            hidden_order = jnp.arange(h_dim) % (N - 1) if N > 1 else jnp.zeros(h_dim, dtype=jnp.int32)
+            mask = (prev_order[:, None] <= hidden_order[None, :]).astype(jnp.float32)
             masks.append(mask)
-            prev_site = hidden_site
+            prev_order = hidden_order
 
-        output_site = jnp.arange(N)
-        output_mask = (prev_site[:, None] <= output_site[None, :]).astype(jnp.float32)
+        output_order = jnp.arange(N)
+        output_mask = (prev_order[:, None] < output_order[None, :]).astype(jnp.float32)
         masks.append(output_mask)
 
         self.layers = [MaskedDense(features=m.shape[1], mask=m) for m in masks]
-        self.activations = [PReLU(features=m.shape[1]) for m in masks[:-1]]
 
     def __call__(self, z):
         """Compute logits for each conditional p(z_k | z_{<k}).
@@ -94,9 +78,9 @@ class MADE(nn.Module):
         """
         x = (z + 1) / 2  # {0, 1}
 
-        for layer, act in zip(self.layers[:-1], self.activations):
+        for layer in self.layers[:-1]:
             x = layer(x)
-            x = act(x)
+            x = nn.softplus(x)
         logits = self.layers[-1](x)
         return logits
 
