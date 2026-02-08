@@ -88,6 +88,7 @@ def layer_free_energy_reduction(made_model, made_params, flow_model, flow_params
 
     # ΔF_l = F(l layers) - F(l+1 layers)
     deltas = jnp.array([f_vars[i] - f_vars[i + 1] for i in range(n_layers)])
+    print(f"Per-layer free energy contributions: {deltas}")
     return deltas
 
 
