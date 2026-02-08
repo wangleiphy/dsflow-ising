@@ -7,7 +7,7 @@ where q(σ) = p_θ(f_φ⁻¹(σ)), z ~ p_θ, σ = f_φ(z).
 
 θ-gradient (REINFORCE):
     ∇_θ F_var = E_z[ (R(z) - b) ∇_θ ln p_θ(z) ]
-    where R(z) = E(f_φ(z)) + T ln p_θ(z) and b is a running baseline.
+    where R(z) = E(f_φ(z)) + T ln p_θ(z) and b is the batch mean (zero-bias baseline).
 
 φ-gradient (STE):
     ∇_φ F_var ≈ ∇_φ E(f_φ(z))  (using straight-through estimator through sign)
@@ -20,7 +20,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from dsflow_ising.ising import nearest_neighbor_pairs, energy
+from dsflow_ising.ising import nearest_neighbor_pairs, energy, magnetization
 from dsflow_ising.made import MADE, log_prob, sample
 from dsflow_ising.flow import DiscreteFlow
 from dsflow_ising.config import ModelConfig, TrainConfig
@@ -37,21 +37,7 @@ class TrainState(NamedTuple):
 
 def compute_loss(made_model, made_params, flow_model, flow_params,
                  z_samples, z_log_probs, pairs, J, T):
-    """Compute variational free energy F_var = mean(E(σ) + T * ln p_θ(z)).
-
-    Args:
-        made_model, made_params: base distribution
-        flow_model, flow_params: discrete flow
-        z_samples: samples from p_θ, shape (batch, N)
-        z_log_probs: ln p_θ(z) for each sample, shape (batch,)
-        pairs: nearest-neighbor bond indices
-        J: coupling constant
-        T: temperature
-
-    Returns:
-        F_var: scalar, mean variational free energy per sample
-        energies: shape (batch,), E(σ) per sample
-    """
+    """Compute variational free energy F_var = mean(E(σ) + T * ln p_θ(z))."""
     sigma = flow_model.apply(flow_params, z_samples, use_ste=False)
     energies = jax.vmap(lambda s: energy(s, pairs, J))(sigma)
     rewards = energies + T * z_log_probs
@@ -59,61 +45,30 @@ def compute_loss(made_model, made_params, flow_model, flow_params,
 
 
 def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
-                    made_optimizer, flow_optimizer):
-    """Create a JIT-compiled training step function.
-
-    Args:
-        made_model: MADE autoregressive model
-        flow_model: DiscreteFlow model
-        pairs: nearest-neighbor bond indices
-        J: coupling constant
-        T: temperature
-        batch_size: number of samples per step
-        made_optimizer: optax optimizer for base distribution
-        flow_optimizer: optax optimizer for flow
-
-    Returns a function: (state, key) -> (state, metrics)
-    """
+                    made_optimizer, flow_optimizer, z2=False):
+    """Create a JIT-compiled training step function."""
 
     def _step(state, key):
         made_params, flow_params, made_opt, flow_opt, baseline, step = state
 
-        # Sample from base distribution
-        z_samples, z_log_probs = sample(made_model, made_params, key, num_samples=batch_size)
+        z_samples, z_log_probs = sample(
+            made_model, made_params, key, num_samples=batch_size, z2=z2)
 
-        # --- REINFORCE gradient for θ (made_params) ---
-        # R(z) = E(f_φ(z)) + T * ln p_θ(z)
         sigma = flow_model.apply(flow_params, z_samples, use_ste=False)
         energies = jax.vmap(lambda s: energy(s, pairs, J))(sigma)
         rewards = energies + T * z_log_probs
         f_var = jnp.mean(rewards)
 
-        # Advantage with baseline
-        advantage = rewards - baseline
-
-        # ∇_θ F_var ≈ mean( advantage * ∇_θ ln p_θ(z) )
-        def made_loss_fn(mp):
-            lps = jax.vmap(lambda z: log_prob(made_model, mp, z))(z_samples)
-            return jnp.mean(jax.lax.stop_gradient(advantage) * lps) + T * jnp.mean(lps)
-
-        # Actually: F_var = E[E(σ)] + T * E[ln p_θ(z)]
-        # ∇_θ F_var = E[ (E(σ) + T ln p_θ(z) - b) ∇_θ ln p_θ(z) ] + T * E[∇_θ ln p_θ(z)]
-        # But the second term is zero in expectation (score function identity).
-        # So REINFORCE: ∇_θ F_var ≈ mean( advantage * ∇_θ ln p_θ(z) )
-        # But we can also use the "reparameterization" through the log-prob itself:
-        # The clean way is: loss_θ = mean( stop_grad(advantage) * ln p_θ(z) )
+        advantage = rewards - jnp.mean(rewards)
 
         def made_reinforce_loss(mp):
-            lps = jax.vmap(lambda z: log_prob(made_model, mp, z))(z_samples)
+            lps = jax.vmap(lambda z: log_prob(made_model, mp, z, z2=z2))(z_samples)
             return jnp.mean(jax.lax.stop_gradient(advantage) * lps)
 
         made_grads = jax.grad(made_reinforce_loss)(made_params)
         made_updates, new_made_opt = made_optimizer.update(made_grads, made_opt, made_params)
         new_made_params = optax.apply_updates(made_params, made_updates)
 
-        # --- STE gradient for φ (flow_params) ---
-        # Only the energy term depends on φ: ∇_φ E(f_φ(z))
-        # Using STE through the sign function
         def flow_loss_fn(fp):
             sigma_ste = flow_model.apply(fp, z_samples, use_ste=True)
             e = jax.vmap(lambda s: energy(s, pairs, J))(sigma_ste)
@@ -123,22 +78,20 @@ def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
         flow_updates, new_flow_opt = flow_optimizer.update(flow_grads, flow_opt, flow_params)
         new_flow_params = optax.apply_updates(flow_params, flow_updates)
 
-        # Update baseline (exponential moving average)
-        new_baseline = 0.99 * baseline + 0.01 * f_var
-
         new_state = TrainState(
             made_params=new_made_params,
             flow_params=new_flow_params,
             made_opt_state=new_made_opt,
             flow_opt_state=new_flow_opt,
-            baseline=new_baseline,
+            baseline=f_var,
             step=step + 1,
         )
         metrics = {
             'f_var': f_var,
             'energy': jnp.mean(energies),
             'entropy': -jnp.mean(z_log_probs),
-            'baseline': baseline,
+            'baseline': f_var,
+            'mag': jnp.mean(sigma),
         }
         return new_state, metrics
 
@@ -146,30 +99,24 @@ def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
 
 
 def init_train_state(model_cfg: ModelConfig, train_cfg: TrainConfig):
-    """Initialize all models, parameters, and optimizers.
-
-    Returns:
-        (made_model, flow_model, state, pairs, made_opt, flow_opt)
-    """
+    """Initialize all models, parameters, and optimizers."""
     key = jax.random.PRNGKey(train_cfg.seed)
     N = model_cfg.L ** 2
     hidden_dims = model_cfg.made_hidden_dims if model_cfg.made_hidden_dims else (4 * N,)
 
-    # Initialize MADE
     made_model = MADE(n_sites=N, hidden_dims=hidden_dims)
     key, subkey = jax.random.split(key)
     made_params = made_model.init(subkey, jnp.ones(N))
 
-    # Initialize flow
     flow_model = DiscreteFlow(
         L=model_cfg.L,
         n_layers=model_cfg.n_flow_layers,
         mask_features=model_cfg.mask_features,
+        z2=model_cfg.z2,
     )
     key, subkey = jax.random.split(key)
     flow_params = flow_model.init(subkey, jnp.ones(N))
 
-    # Optimizers
     made_opt = optax.adam(train_cfg.lr_theta)
     flow_opt = optax.adam(train_cfg.lr_phi)
     made_opt_state = made_opt.init(made_params)
@@ -189,35 +136,27 @@ def init_train_state(model_cfg: ModelConfig, train_cfg: TrainConfig):
 
 
 def train_step(made_model, flow_model, pairs, J, T, batch_size,
-               made_optimizer, flow_optimizer, state, key):
-    """Single training step.
-
-    Returns:
-        new_state: updated TrainState
-        metrics: dict with f_var, energy, entropy, baseline
-    """
+               made_optimizer, flow_optimizer, state, key, z2=False):
+    """Single training step."""
     made_params, flow_params, made_opt, flow_opt, baseline, step = state
 
-    # Sample from base distribution
-    z_samples, z_log_probs = sample(made_model, made_params, key, num_samples=batch_size)
+    z_samples, z_log_probs = sample(
+        made_model, made_params, key, num_samples=batch_size, z2=z2)
 
-    # Compute energies and rewards
     sigma = flow_model.apply(flow_params, z_samples, use_ste=False)
     energies = jax.vmap(lambda s: energy(s, pairs, J))(sigma)
     rewards = energies + T * z_log_probs
     f_var = jnp.mean(rewards)
-    advantage = rewards - baseline
+    advantage = rewards - jnp.mean(rewards)
 
-    # REINFORCE gradient for θ
     def made_reinforce_loss(mp):
-        lps = jax.vmap(lambda z: log_prob(made_model, mp, z))(z_samples)
+        lps = jax.vmap(lambda z: log_prob(made_model, mp, z, z2=z2))(z_samples)
         return jnp.mean(jax.lax.stop_gradient(advantage) * lps)
 
     made_grads = jax.grad(made_reinforce_loss)(made_params)
     made_updates, new_made_opt = made_optimizer.update(made_grads, made_opt, made_params)
     new_made_params = optax.apply_updates(made_params, made_updates)
 
-    # STE gradient for φ (only energy depends on flow params)
     def flow_loss_fn(fp):
         sigma_ste = flow_model.apply(fp, z_samples, use_ste=True)
         e = jax.vmap(lambda s: energy(s, pairs, J))(sigma_ste)
@@ -227,21 +166,20 @@ def train_step(made_model, flow_model, pairs, J, T, batch_size,
     flow_updates, new_flow_opt = flow_optimizer.update(flow_grads, flow_opt, flow_params)
     new_flow_params = optax.apply_updates(flow_params, flow_updates)
 
-    new_baseline = 0.99 * baseline + 0.01 * f_var
-
     new_state = TrainState(
         made_params=new_made_params,
         flow_params=new_flow_params,
         made_opt_state=new_made_opt,
         flow_opt_state=new_flow_opt,
-        baseline=new_baseline,
+        baseline=f_var,
         step=step + 1,
     )
     metrics = {
         'f_var': f_var,
         'energy': jnp.mean(energies),
         'entropy': -jnp.mean(z_log_probs),
-        'baseline': baseline,
+        'baseline': f_var,
+        'mag': jnp.mean(sigma),
     }
     return new_state, metrics
 
@@ -250,25 +188,7 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
           log_every: int = 100, log_file: str = None,
           use_wandb: bool = False, wandb_project: str = "dsflow-ising",
           wandb_name: str = None):
-    """Full training loop.
-
-    Args:
-        model_cfg: model configuration
-        train_cfg: training configuration
-        log_every: print to stdout every N steps
-        log_file: if provided, write CSV log (step, f_var, energy, entropy, baseline)
-        use_wandb: if True, log metrics to Weights & Biases
-        wandb_project: wandb project name
-        wandb_name: optional wandb run name
-
-    Returns:
-        (state, history, made_model, flow_model, pairs):
-            state: final TrainState
-            history: list of metrics dicts
-            made_model: MADE instance
-            flow_model: DiscreteFlow instance
-            pairs: nearest-neighbor bond indices
-    """
+    """Full training loop."""
     if use_wandb:
         import wandb
         from dataclasses import asdict
@@ -282,6 +202,7 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
         model_cfg, train_cfg
     )
 
+    z2 = model_cfg.z2
     key = jax.random.PRNGKey(train_cfg.seed + 1)
     history = []
 
@@ -289,7 +210,7 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
     if log_file:
         fh = open(log_file, 'w')
         fh.write(f"# L={model_cfg.L} T={train_cfg.T} J={train_cfg.J}\n")
-        fh.write("step,f_var,energy,entropy,baseline\n")
+        fh.write("step,f_var,energy,entropy,baseline,mag\n")
 
     try:
         for i in range(train_cfg.num_steps):
@@ -297,6 +218,7 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
             state, metrics = train_step(
                 made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
                 train_cfg.batch_size, made_opt, flow_opt, state, subkey,
+                z2=z2,
             )
             history.append(metrics)
 
@@ -304,7 +226,8 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
                 fh.write(f"{i+1},{float(metrics['f_var']):.6f},"
                          f"{float(metrics['energy']):.6f},"
                          f"{float(metrics['entropy']):.6f},"
-                         f"{float(metrics['baseline']):.6f}\n")
+                         f"{float(metrics['baseline']):.6f},"
+                         f"{float(metrics['mag']):.6f}\n")
                 fh.flush()
 
             if use_wandb:
@@ -319,7 +242,6 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
                 print(f"Step {i+1}: F_var={metrics['f_var']:.4f}, "
                       f"E={metrics['energy']:.4f}, S={metrics['entropy']:.4f}")
 
-        # Post-training diagnostics
         if use_wandb:
             from dsflow_ising.diagnostics import (
                 variational_free_energy, base_entropy,
@@ -346,13 +268,11 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
             wandb.summary['F_var_per_site'] = float(f_final) / N
             wandb.summary['base_entropy'] = float(h_final)
 
-            # Conditional entropy profile as line plot
             cond_data = [[k, float(cond_ent[k])] for k in range(len(cond_ent))]
             wandb.log({
                 'conditional_entropy_profile': wandb.Table(
                     data=cond_data, columns=['site', 'H(z_k|z_<k)']),
             })
-            # Layer free-energy reduction as bar chart
             layer_data = [[l, float(layer_df[l])] for l in range(len(layer_df))]
             wandb.log({
                 'layer_free_energy_reduction': wandb.Table(
@@ -365,3 +285,4 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
             wandb.finish()
 
     return state, history, made_model, flow_model, pairs
+

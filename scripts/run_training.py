@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--made-hidden-dims", type=int, nargs='+', default=None,
                         help="MADE hidden layer sizes, e.g. --made-hidden-dims 512 512")
+    parser.add_argument("--z2", action="store_true", help="Enable Z2 spin-flip symmetry")
     parser.add_argument("--log-every", type=int, default=100, help="Log interval")
     parser.add_argument("--log-file", type=str, default=None, help="CSV log file path")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
@@ -35,6 +36,7 @@ def main():
         n_flow_layers=args.n_flow_layers,
         mask_features=(16, 16),
         made_hidden_dims=tuple(args.made_hidden_dims) if args.made_hidden_dims else (),
+        z2=args.z2,
     )
     train_cfg = TrainConfig(
         T=args.T,
@@ -47,7 +49,7 @@ def main():
     )
 
     print(f"Training: L={model_cfg.L}, layers={model_cfg.n_flow_layers}, "
-          f"T={train_cfg.T}, batch={train_cfg.batch_size}")
+          f"T={train_cfg.T}, batch={train_cfg.batch_size}, z2={model_cfg.z2}")
     print(f"Total sites: {model_cfg.L**2}")
 
     state, history, made_model, flow_model, pairs = train(
@@ -74,3 +76,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

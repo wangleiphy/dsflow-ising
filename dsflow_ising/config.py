@@ -9,6 +9,7 @@ class ModelConfig:
     n_flow_layers: int = 4
     mask_features: tuple = (16, 16)
     made_hidden_dims: tuple = ()  # empty means (4*N,)
+    z2: bool = False  # Z2 spin-flip symmetry
 
 
 @dataclass
@@ -20,3 +21,4 @@ class TrainConfig:
     lr_phi: float = 1e-3
     num_steps: int = 10000
     seed: int = 42
+

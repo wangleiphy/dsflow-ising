@@ -280,6 +280,88 @@ such that the Boltzmann distribution, expressed in the coordinates
 $\bm{z} = f_\phi^{-1}(\bm{\sigma})$, admits the simplest
 autoregressive factorization.
 
+
+\subsection{Enforcing $\mathbb{Z}_2$ spin-flip symmetry}
+\label{sec:z2-symmetry}
+
+The Ising Hamiltonian is invariant under the global spin flip
+$\bm{\sigma} \to -\bm{\sigma}$, so the Boltzmann distribution satisfies
+$p(\bm{\sigma}) = p(-\bm{\sigma})$.  A variational ansatz that respects
+this $\mathbb{Z}_2$ symmetry exactly has two advantages: (i) it halves
+the effective configuration space the model must learn, and (ii) it
+prevents mode collapse to a single magnetisation sector.
+
+\paragraph{$\mathbb{Z}_2$-symmetric base distribution.}
+Given a bare autoregressive model $p_\theta^{\mathrm{AR}}(\bm{z})$, we
+define the symmetrised base distribution
+\begin{equation}
+  p_\theta(\bm{z})
+  = \tfrac{1}{2}\, p_\theta^{\mathrm{AR}}(\bm{z})
+  + \tfrac{1}{2}\, p_\theta^{\mathrm{AR}}(-\bm{z}),
+  \label{eq:z2-base}
+\end{equation}
+which satisfies $p_\theta(\bm{z}) = p_\theta(-\bm{z})$ by construction.
+The log-probability is evaluated via the log-sum-exp identity:
+\begin{equation}
+  \ln p_\theta(\bm{z})
+  = \mathrm{logsumexp}\!\big(
+    \ln p_\theta^{\mathrm{AR}}(\bm{z}),\;
+    \ln p_\theta^{\mathrm{AR}}(-\bm{z})
+  \big) - \ln 2.
+  \label{eq:z2-logprob}
+\end{equation}
+Sampling proceeds by drawing $\bm{z} \sim p_\theta^{\mathrm{AR}}$ and
+then flipping all spins with probability~$\tfrac{1}{2}$.
+
+\paragraph{$\mathbb{Z}_2$-equivariant flow.}
+For the full variational distribution $q(\bm{\sigma}) =
+p_\theta(f_\phi^{-1}(\bm{\sigma}))$ to inherit the symmetry, the flow
+must be \emph{equivariant}: $f_\phi(-\bm{z}) = -f_\phi(\bm{z})$.
+Combined with~\eqref{eq:z2-base}, this gives
+\begin{equation}
+  q(-\bm{\sigma})
+  = p_\theta\!\big(f_\phi^{-1}(-\bm{\sigma})\big)
+  = p_\theta\!\big(-f_\phi^{-1}(\bm{\sigma})\big)
+  = p_\theta\!\big(f_\phi^{-1}(\bm{\sigma})\big)
+  = q(\bm{\sigma}).
+\end{equation}
+
+\paragraph{Equivariant coupling layers.}
+Recall that a coupling layer acts as $\sigma_A = z_A$ and $\sigma_B =
+z_B \odot m_\phi(z_A)$.  Under $\bm{z} \to -\bm{z}$:
+\begin{itemize}
+  \item The $A$-sublattice maps to $-z_A$ (passthrough), giving
+    $\sigma_A = -z_A$.
+  \item The $B$-sublattice gives $\sigma_B = (-z_B) \odot m_\phi(-z_A)$.
+\end{itemize}
+For equivariance we need $\sigma_B = -z_B \odot m_\phi(z_A)$, which
+requires
+\begin{equation}
+  m_\phi(-z_A) = m_\phi(z_A),
+  \label{eq:even-mask}
+\end{equation}
+i.e., the mask network must be an \emph{even function} of its input.
+
+\paragraph{Symmetrised mask network.}
+For any neural network $h_\phi$, define
+\begin{equation}
+  g_\phi(x) = h_\phi(x) + h_\phi(-x).
+  \label{eq:symmetrised-mask}
+\end{equation}
+Then $g_\phi(-x) = h_\phi(-x) + h_\phi(x) = g_\phi(x)$, so
+condition~\eqref{eq:even-mask} is satisfied exactly.  The mask is then
+$m_\phi(z_A) = \sgn(g_\phi(z_A))$.  This construction doubles the
+computational cost of the mask network (two forward passes per layer) but
+imposes no restriction on the network architecture~$h_\phi$.
+
+\begin{remark}
+For $\pm 1$ spins, one might consider using $|z_A|$ or $z_A^2$ as
+input to enforce evenness.  However, since $|z_i| = z_i^2 = 1$ for all
+$z_i \in \{\pm 1\}$, these are constant and carry no information.  The
+symmetrisation~\eqref{eq:symmetrised-mask} is the simplest approach that
+preserves the full expressiveness of the mask network.
+\end{remark}
+
 \subsection{Physical interpretation of a coupling layer}
 \label{sec:physical-interp}
 

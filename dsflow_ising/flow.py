@@ -29,10 +29,12 @@ class DiscreteFlow(nn.Module):
         L: lattice side length
         n_layers: number of coupling layers
         mask_features: hidden channel sizes for MaskNet ConvNets
+        z2: if True, symmetrize mask networks for Z2 equivariance
     """
     L: int
     n_layers: int = 4
     mask_features: Sequence[int] = (16, 16)
+    z2: bool = False
 
     @nn.compact
     def __call__(self, z, use_ste=True, inverse=False):
@@ -54,15 +56,16 @@ class DiscreteFlow(nn.Module):
         for i in layer_order:
             partition = get_partition(i)
             mask_net = MaskNet(L=self.L, features=self.mask_features, name=f"layer_{i}")
-            # Build grid with A-sublattice values for the mask net
-            x = _apply_coupling(mask_net, x, self.L, partition, use_ste)
+            x = _apply_coupling(mask_net, x, self.L, partition, use_ste, self.z2)
         return x
 
 
-def _apply_coupling(mask_net, z, L, partition, use_ste):
+def _apply_coupling(mask_net, z, L, partition, use_ste, z2=False):
     """Apply a single coupling layer using a MaskNet defined in the parent scope.
 
-    This is used within nn.compact so the MaskNet's params are managed by Flax.
+    When z2=True, the mask network output is symmetrized:
+        g(z_A) = h(z_A) + h(-z_A)
+    This makes g an even function, ensuring Z2 equivariance of the coupling layer.
     """
     from dsflow_ising.coupling import checkerboard_indices, _ste_sign
     N = L * L
@@ -78,6 +81,11 @@ def _apply_coupling(mask_net, z, L, partition, use_ste):
 
     # Get logits from mask network
     logits = mask_net(z_grid)  # (B, L, L)
+
+    if z2:
+        # Symmetrize: g(x) = h(x) + h(-x), ensuring g(-x) = g(x)
+        logits = logits + mask_net(-z_grid)
+
     logits_flat = logits.reshape(B, N)
     logits_b = logits_flat[:, b_idx]
 
@@ -92,3 +100,4 @@ def _apply_coupling(mask_net, z, L, partition, use_ste):
         return sigma_flat.reshape(*batch_shape, N)
     else:
         return sigma_flat.squeeze(0)
+
