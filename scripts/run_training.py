@@ -23,6 +23,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--made-hidden-dims", type=int, nargs='+', default=None,
                         help="MADE hidden layer sizes, e.g. --made-hidden-dims 512 512")
+    parser.add_argument("--mask-features", type=int, nargs='+', default=[16, 16],
+                        help="Flow MaskNet channels per layer, e.g. --mask-features 64 64 64 64 64 64 64 64")
     parser.add_argument("--z2", action="store_true", help="Enable Z2 spin-flip symmetry")
     parser.add_argument("--beta-anneal", type=float, default=0.0,
                         help="Beta annealing rate (0=disabled, e.g. 0.998)")
@@ -36,7 +38,7 @@ def main():
     model_cfg = ModelConfig(
         L=args.L,
         n_flow_layers=args.n_flow_layers,
-        mask_features=(16, 16),
+        mask_features=tuple(args.mask_features),
         made_hidden_dims=tuple(args.made_hidden_dims) if args.made_hidden_dims else (),
         z2=args.z2,
     )
