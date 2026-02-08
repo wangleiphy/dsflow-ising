@@ -46,7 +46,10 @@ def compute_loss(made_model, made_params, flow_model, flow_params,
 
 def make_train_step(made_model, flow_model, pairs, J, T, batch_size,
                     made_optimizer, flow_optimizer, z2=False):
-    """Create a JIT-compiled training step function."""
+    """Create a JIT-compiled training step function.
+
+    Returns a function: (state, key) -> (state, metrics)
+    """
 
     def _step(state, key):
         made_params, flow_params, made_opt, flow_opt, baseline, step = state
@@ -137,51 +140,12 @@ def init_train_state(model_cfg: ModelConfig, train_cfg: TrainConfig):
 
 def train_step(made_model, flow_model, pairs, J, T, batch_size,
                made_optimizer, flow_optimizer, state, key, z2=False):
-    """Single training step."""
-    made_params, flow_params, made_opt, flow_opt, baseline, step = state
-
-    z_samples, z_log_probs = sample(
-        made_model, made_params, key, num_samples=batch_size, z2=z2)
-
-    sigma = flow_model.apply(flow_params, z_samples, use_ste=False)
-    energies = jax.vmap(lambda s: energy(s, pairs, J))(sigma)
-    rewards = energies + T * z_log_probs
-    f_var = jnp.mean(rewards)
-    advantage = rewards - jnp.mean(rewards)
-
-    def made_reinforce_loss(mp):
-        lps = jax.vmap(lambda z: log_prob(made_model, mp, z, z2=z2))(z_samples)
-        return jnp.mean(jax.lax.stop_gradient(advantage) * lps)
-
-    made_grads = jax.grad(made_reinforce_loss)(made_params)
-    made_updates, new_made_opt = made_optimizer.update(made_grads, made_opt, made_params)
-    new_made_params = optax.apply_updates(made_params, made_updates)
-
-    def flow_loss_fn(fp):
-        sigma_ste = flow_model.apply(fp, z_samples, use_ste=True)
-        e = jax.vmap(lambda s: energy(s, pairs, J))(sigma_ste)
-        return jnp.mean(e)
-
-    flow_grads = jax.grad(flow_loss_fn)(flow_params)
-    flow_updates, new_flow_opt = flow_optimizer.update(flow_grads, flow_opt, flow_params)
-    new_flow_params = optax.apply_updates(flow_params, flow_updates)
-
-    new_state = TrainState(
-        made_params=new_made_params,
-        flow_params=new_flow_params,
-        made_opt_state=new_made_opt,
-        flow_opt_state=new_flow_opt,
-        baseline=f_var,
-        step=step + 1,
+    """Single training step (convenience wrapper; builds and calls JIT step)."""
+    step_fn = make_train_step(
+        made_model, flow_model, pairs, J, T, batch_size,
+        made_optimizer, flow_optimizer, z2=z2,
     )
-    metrics = {
-        'f_var': f_var,
-        'energy': jnp.mean(energies),
-        'entropy': -jnp.mean(z_log_probs),
-        'baseline': f_var,
-        'mag': jnp.mean(sigma),
-    }
-    return new_state, metrics
+    return step_fn(state, key)
 
 
 def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
@@ -206,6 +170,12 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
     key = jax.random.PRNGKey(train_cfg.seed + 1)
     history = []
 
+    # Create JIT-compiled training step (built once, reused every iteration)
+    step_fn = make_train_step(
+        made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
+        train_cfg.batch_size, made_opt, flow_opt, z2=z2,
+    )
+
     fh = None
     if log_file:
         fh = open(log_file, 'w')
@@ -215,11 +185,7 @@ def train(model_cfg: ModelConfig, train_cfg: TrainConfig,
     try:
         for i in range(train_cfg.num_steps):
             key, subkey = jax.random.split(key)
-            state, metrics = train_step(
-                made_model, flow_model, pairs, train_cfg.J, train_cfg.T,
-                train_cfg.batch_size, made_opt, flow_opt, state, subkey,
-                z2=z2,
-            )
+            state, metrics = step_fn(state, subkey)
             history.append(metrics)
 
             if fh:
