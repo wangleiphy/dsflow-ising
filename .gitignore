@@ -35,8 +35,14 @@ Thumbs.db
 *.pt
 *.pth
 *.ckpt
+*.pdf
 wandb/
 runs/
+logs/
+
+# Analysis scripts (edited per-cluster, not tracked)
+scripts/compare_*.py
+scripts/job_*.sh
 
 # Results (training logs, plots)
 results/
