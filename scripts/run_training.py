@@ -26,6 +26,16 @@ def main():
     parser.add_argument("--mask-features", type=int, nargs='+', default=[16, 16],
                         help="Flow MaskNet channels per layer, e.g. --mask-features 64 64 64 64 64 64 64 64")
     parser.add_argument("--z2", action="store_true", help="Enable Z2 spin-flip symmetry")
+    parser.add_argument("--flow-type", type=str, default="flat", choices=["flat", "multiscale"],
+                        help="Flow architecture: 'flat' (DiscreteFlow) or 'multiscale' (MultiScaleFlow)")
+    parser.add_argument("--n-scales", type=int, default=2,
+                        help="Number of spatial scales for multiscale flow")
+    parser.add_argument("--layers-per-scale", type=int, default=4,
+                        help="Coupling layers per scale per pass (multiscale)")
+    parser.add_argument("--ms-hidden-features", type=int, default=32,
+                        help="Hidden channels in multiscale MaskNet")
+    parser.add_argument("--ms-n-res-blocks", type=int, default=2,
+                        help="Residual blocks per multiscale MaskNet")
     parser.add_argument("--beta-anneal", type=float, default=0.0,
                         help="Beta annealing rate (0=disabled, e.g. 0.998)")
     parser.add_argument("--log-every", type=int, default=100, help="Log interval")
@@ -41,6 +51,11 @@ def main():
         mask_features=tuple(args.mask_features),
         made_hidden_dims=tuple(args.made_hidden_dims) if args.made_hidden_dims else (),
         z2=args.z2,
+        flow_type=args.flow_type,
+        n_scales=args.n_scales,
+        layers_per_scale=args.layers_per_scale,
+        ms_hidden_features=args.ms_hidden_features,
+        ms_n_res_blocks=args.ms_n_res_blocks,
     )
     train_cfg = TrainConfig(
         T=args.T,
@@ -53,8 +68,14 @@ def main():
         beta_anneal=args.beta_anneal,
     )
 
-    print(f"Training: L={model_cfg.L}, layers={model_cfg.n_flow_layers}, "
+    print(f"Training: L={model_cfg.L}, flow={model_cfg.flow_type}, "
           f"T={train_cfg.T}, batch={train_cfg.batch_size}, z2={model_cfg.z2}")
+    if model_cfg.flow_type == "multiscale":
+        n_coupling = (2 * model_cfg.n_scales - 1) * model_cfg.layers_per_scale
+        print(f"MultiScale: scales={model_cfg.n_scales}, layers/scale={model_cfg.layers_per_scale}, "
+              f"total_coupling={n_coupling}, hidden={model_cfg.ms_hidden_features}")
+    else:
+        print(f"Flat: layers={model_cfg.n_flow_layers}, mask_features={model_cfg.mask_features}")
     print(f"Total sites: {model_cfg.L**2}")
 
     state, history, made_model, flow_model, pairs = train(

@@ -23,6 +23,7 @@ import optax
 from dsflow_ising.ising import nearest_neighbor_pairs, energy, magnetization
 from dsflow_ising.made import MADE, log_prob, sample
 from dsflow_ising.flow import DiscreteFlow
+from dsflow_ising.multiscale_flow import MultiScaleFlow
 from dsflow_ising.config import ModelConfig, TrainConfig
 
 
@@ -129,12 +130,22 @@ def init_train_state(model_cfg: ModelConfig, train_cfg: TrainConfig):
     key, subkey = jax.random.split(key)
     made_params = made_model.init(subkey, jnp.ones(N))
 
-    flow_model = DiscreteFlow(
-        L=model_cfg.L,
-        n_layers=model_cfg.n_flow_layers,
-        mask_features=model_cfg.mask_features,
-        z2=model_cfg.z2,
-    )
+    if model_cfg.flow_type == "multiscale":
+        flow_model = MultiScaleFlow(
+            L=model_cfg.L,
+            n_scales=model_cfg.n_scales,
+            layers_per_scale=model_cfg.layers_per_scale,
+            hidden_features=model_cfg.ms_hidden_features,
+            n_res_blocks=model_cfg.ms_n_res_blocks,
+            z2=model_cfg.z2,
+        )
+    else:
+        flow_model = DiscreteFlow(
+            L=model_cfg.L,
+            n_layers=model_cfg.n_flow_layers,
+            mask_features=model_cfg.mask_features,
+            z2=model_cfg.z2,
+        )
     key, subkey = jax.random.split(key)
     flow_params = flow_model.init(subkey, jnp.ones(N))
 
