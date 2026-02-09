@@ -1264,6 +1264,654 @@ and most needed but hardest to train (via reverse KL) for systems where
 MCMC fails.
 
 %======================================================================
+\section{Beyond bijective flows: relaxing the bijectivity constraint}
+\label{sec:beyond-bijective}
+%======================================================================
+
+The entropy-preservation theorem (Proposition~\ref{prop:entropy}) identifies
+a fundamental limitation of bijective discrete flows: the flow cannot
+increase the entropy of the variational distribution, so the entire entropy
+budget must come from the base $p_\theta$.  A natural question is whether
+the bijectivity constraint can be relaxed while maintaining the rigorous
+variational bound on $\Ftrue$.
+
+The standard relaxations from the latent-variable literature fail:
+the ELBO provides a \emph{lower} bound on $\ln q(\bm{\sigma})$, which,
+when substituted into~\eqref{eq:var-free-energy}, yields a quantity
+\emph{below} $\Fvar$---not a valid upper bound on $\Ftrue$.  The joint
+bound (Sec.~\ref{sec:rigour}) is rigorous but loose by an extensive
+amount.  We describe three approaches that succeed, each with different
+tradeoffs.
+
+\subsection{Markov-corrected variational ansatz}
+\label{sec:markov-corrected}
+
+The simplest extension appends a \emph{fixed} Markov transition kernel to
+the autoregressive base, with no bijective flow.  The generative process is
+\begin{equation}
+  \bm{z} \sim p_\theta(\bm{z}),
+  \qquad
+  \bm{\sigma} \sim T(\cdot \mid \bm{z}),
+  \label{eq:mc-generative}
+\end{equation}
+where $T$ is a fixed, analytically known transition kernel (e.g., a Gibbs
+sweep targeting the Boltzmann distribution).  The variational distribution
+is the marginal
+\begin{equation}
+  q(\bm{\sigma})
+  = \sum_{\bm{z}} p_\theta(\bm{z})\, T(\bm{\sigma} \mid \bm{z}),
+  \label{eq:mc-marginal}
+\end{equation}
+which is intractable---evaluating $\ln q(\bm{\sigma})$ requires summing
+over all $\bm{z}$.  Nevertheless, a rigorous variational bound can be
+obtained without evaluating $\ln q$.
+
+\paragraph{Derivation of the bound.}
+Define a \emph{reverse kernel} $\tilde{T}(\bm{z} \mid \bm{\sigma})$---an
+auxiliary distribution that approximates the posterior over $\bm{z}$ given
+$\bm{\sigma}$.  Consider the joint distribution of the forward process,
+$P_{\mathrm{fwd}}(\bm{z}, \bm{\sigma}) = p_\theta(\bm{z})\,
+T(\bm{\sigma} \mid \bm{z})$, and the ``target joint''
+$P_{\mathrm{target}}(\bm{z}, \bm{\sigma}) =
+p_{\mathrm{Boltz}}(\bm{\sigma})\, \tilde{T}(\bm{z} \mid \bm{\sigma})$.
+Since $\KL(P_{\mathrm{fwd}} \| P_{\mathrm{target}}) \geq 0$:
+\begin{align}
+  0 &\leq \E_{P_{\mathrm{fwd}}}\!\Big[
+    \ln \frac{p_\theta(\bm{z})\, T(\bm{\sigma}|\bm{z})}{
+      p_{\mathrm{Boltz}}(\bm{\sigma})\, \tilde{T}(\bm{z}|\bm{\sigma})}
+  \Big] \nonumber\\
+  &= \E\!\big[\ln p_\theta(\bm{z})
+    + \ln T(\bm{\sigma}|\bm{z})
+    - \ln \tilde{T}(\bm{z}|\bm{\sigma})
+    + \beta E(\bm{\sigma}) + \ln Z
+  \big],
+\end{align}
+which rearranges to
+\begin{equation}
+  \boxed{%
+    \Ftrue \leq \E\!\Big[
+      E(\bm{\sigma}) + T \ln p_\theta(\bm{z})
+      + T \ln \frac{T(\bm{\sigma}|\bm{z})}{\tilde{T}(\bm{z}|\bm{\sigma})}
+    \Big],
+  }
+  \label{eq:mc-bound}
+\end{equation}
+where the expectation is over $\bm{z} \sim p_\theta$,
+$\bm{\sigma} \sim T(\cdot|\bm{z})$.  This is a \emph{rigorous upper bound}
+on $\Ftrue$ for \emph{any} choice of $T$ and $\tilde{T}$.
+
+\paragraph{Structure of the bound.}
+Equation~\eqref{eq:mc-bound} decomposes into three interpretable terms:
+\begin{equation}
+  \tilde{F}
+  = \underbrace{\E[E(\bm{\sigma})]}_{\text{energy}}
+  \;\underbrace{- T\, H[p_\theta]}_{\text{base entropy}}
+  \;\underbrace{+ T \E\!\Big[\ln \frac{T(\bm{\sigma}|\bm{z})}{
+    \tilde{T}(\bm{z}|\bm{\sigma})}\Big]}_{\text{Markov correction}}.
+  \label{eq:mc-three-terms}
+\end{equation}
+The first two terms are the standard variational free energy of $p_\theta$,
+as if the configurations were $\bm{z}$ rather than $\bm{\sigma}$.  The
+third term is the cost of the stochastic correction---the average
+log-ratio of forward to reverse transitions.
+
+\paragraph{Gap analysis.}
+The gap between~\eqref{eq:mc-bound} and the true variational free energy
+$\Fvar[q]$ of the marginal~\eqref{eq:mc-marginal} is
+\begin{equation}
+  \tilde{F} - \Fvar[q]
+  = T \E_{q(\bm{\sigma})}\!\big[
+    \KL\!\big(p(\bm{z}|\bm{\sigma}) \,\big\|\,
+    \tilde{T}(\bm{z}|\bm{\sigma})\big)
+  \big]
+  \geq 0,
+  \label{eq:mc-gap}
+\end{equation}
+where $p(\bm{z}|\bm{\sigma}) = p_\theta(\bm{z})\,T(\bm{\sigma}|\bm{z}) /
+q(\bm{\sigma})$ is the true posterior.  The bound is tight when $\tilde{T}$
+matches the posterior exactly.
+
+\paragraph{Specialisation to Gibbs sweeps.}
+For the Ising model, the natural choice is a systematic-scan Gibbs sweep
+targeting the Boltzmann distribution.  Here $\bm{z}$ is the
+\emph{starting} (old) configuration produced by the AR base, and
+$\bm{\sigma}$ is the \emph{output} (new) configuration on which the energy
+is evaluated.  The sweep updates spins sequentially in order
+$i = 1, \ldots, N$: at step~$i$, sites $j < i$ already hold their new
+values $\sigma_j$, while sites $j > i$ still hold their old values $z_j$.
+The transition probability factorises as
+\begin{equation}
+  T(\bm{\sigma} \mid \bm{z})
+  = \prod_{i=1}^{N}
+    p_{\mathrm{Boltz}}(\sigma_i \mid \sigma_{<i},\, z_{>i}),
+  \label{eq:gibbs-forward}
+\end{equation}
+where each factor is the single-site Gibbs conditional
+\begin{equation}
+  p_{\mathrm{Boltz}}(\sigma_i \mid \text{neighbours})
+  = \frac{e^{\beta \sigma_i h_i}}{2\cosh \beta h_i},
+  \qquad
+  h_i = J \sum_{j \sim i} s_j,
+  \qquad
+  s_j =
+  \begin{cases}
+    \sigma_j & \text{if } j < i \;\text{(already updated)},\\
+    z_j      & \text{if } j > i \;\text{(not yet updated)}.
+  \end{cases}
+  \label{eq:gibbs-conditional}
+\end{equation}
+On a 2D lattice, site~$i$ typically has neighbours with both lower and
+higher indices, so the local field $h_i$ genuinely mixes old ($z$) and new
+($\sigma$) spin values.  Each factor is analytically known, so
+$\ln T(\bm{\sigma}|\bm{z})$ is a sum of $N$ tractable terms.
+
+For the reverse kernel, a Gibbs sweep in the \emph{reverse} order
+$i = N, N-1, \ldots, 1$ is a natural, parameter-free choice:
+\begin{equation}
+  \tilde{T}(\bm{z} \mid \bm{\sigma})
+  = \prod_{i=N}^{1}
+    p_{\mathrm{Boltz}}(z_i \mid z_{>i},\, \sigma_{<i}).
+  \label{eq:gibbs-reverse}
+\end{equation}
+Because the forward and reverse sweeps visit sites in opposite order, they
+see different mixtures of old and new spins at each step, so
+$\ln T(\bm{\sigma}|\bm{z}) \neq \ln \tilde{T}(\bm{z}|\bm{\sigma})$ in
+general.  Both $\ln T$ and $\ln \tilde{T}$ are sums of $N$ local Boltzmann
+conditionals---no neural networks, no learning, no STE.
+
+\paragraph{The telescoping problem.}
+Despite the apparent asymmetry between forward and reverse sweeps, the
+Markov correction in~\eqref{eq:mc-bound} \emph{trivialises} when both
+kernels target the Boltzmann distribution at the same temperature.  At
+step~$i$, both the forward and reverse sweeps condition on the same
+background $(\sigma_{<i},\, z_{>i})$, so the local field $h_i$ is
+identical.  The per-site log-ratio is therefore
+\begin{equation}
+  \ln p_{\mathrm{Boltz}}(\sigma_i \mid \sigma_{<i}, z_{>i})
+  - \ln p_{\mathrm{Boltz}}(z_i \mid \sigma_{<i}, z_{>i})
+  = \beta(\sigma_i - z_i)\, h_i.
+  \label{eq:per-site-ratio}
+\end{equation}
+Summing over all sites, this is a telescoping sum of single-spin energy
+changes.  Define the sequence of partially updated configurations
+$\bm{c}^{(i)} = (\sigma_1, \ldots, \sigma_i, z_{i+1}, \ldots, z_N)$, so
+that $\bm{c}^{(0)} = \bm{z}$ and $\bm{c}^{(N)} = \bm{\sigma}$.  The
+energy change at step~$i$ is
+\begin{equation}
+  E(\bm{c}^{(i)}) - E(\bm{c}^{(i-1)})
+  = -(\sigma_i - z_i)\, h_i,
+\end{equation}
+so the total log-ratio telescopes:
+\begin{equation}
+  \ln \frac{T(\bm{\sigma}|\bm{z})}{\tilde{T}(\bm{z}|\bm{\sigma})}
+  = \beta \sum_{i=1}^{N} (\sigma_i - z_i)\, h_i
+  = -\beta \sum_{i=1}^{N} \big[E(\bm{c}^{(i)}) - E(\bm{c}^{(i-1)})\big]
+  = \beta\big[E(\bm{z}) - E(\bm{\sigma})\big].
+  \label{eq:telescoping}
+\end{equation}
+Substituting into the bound~\eqref{eq:mc-bound}:
+\begin{equation}
+  \tilde{F}
+  = \E\!\big[E(\bm{\sigma}) + T \ln p_\theta(\bm{z})
+    + E(\bm{z}) - E(\bm{\sigma})\big]
+  = \E\!\big[E(\bm{z}) + T \ln p_\theta(\bm{z})\big]
+  = \Fvar[p_\theta].
+  \label{eq:trivialisation}
+\end{equation}
+\emph{The Gibbs sweep drops out entirely.}  The bound reduces to the
+variational free energy of the base distribution, as if no MCMC step had
+been applied.  This is not a coincidence: any transition kernel $T$ that
+satisfies detailed balance with respect to $p_{\mathrm{Boltz}}$, paired
+with the natural reverse $\tilde{T} = T$ or any $\tilde{T}$ whose
+log-ratio with $T$ equals $\beta \Delta E$, produces the same
+cancellation.  In particular, the Wolff cluster algorithm, random-scan
+Gibbs, and Swendsen--Wang all trivialise the bound for the same reason.
+
+The physical interpretation is clear: a single MCMC step at the target
+temperature is ``too well matched'' to the Boltzmann distribution.  The
+importance weight exactly compensates for any energy change the kernel
+produces, yielding zero net improvement.
+
+\paragraph{The invisible improvement.}
+The trivialisation of the bound does \emph{not} mean the Gibbs sweep is
+useless---it means the bound cannot see the improvement.  The variational
+distribution after the sweep,
+\begin{equation}
+  q(\bm{\sigma})
+  = \sum_{\bm{z}} p_\theta(\bm{z})\, T(\bm{\sigma} \mid \bm{z}),
+\end{equation}
+is genuinely different from $p_\theta$ and provably better.  Since $T$
+leaves $p_{\mathrm{Boltz}}$ invariant, the data processing inequality for
+Markov chains guarantees contraction of the KL divergence:
+\begin{equation}
+  \KL(q \| p_{\mathrm{Boltz}})
+  \leq \KL(p_\theta \| p_{\mathrm{Boltz}}),
+  \label{eq:kl-contraction}
+\end{equation}
+which is equivalent to
+\begin{equation}
+  \Fvar[q] \leq \Fvar[p_\theta].
+  \label{eq:fvar-contraction}
+\end{equation}
+The Gibbs sweep is a \emph{provable improvement operator} on the
+variational distribution: it increases entropy (by convolving $p_\theta$
+with the stochastic kernel) and adjusts the energy, with the net effect
+always reducing the variational free energy.
+
+After $k$ sweeps, the contraction compounds:
+\begin{equation}
+  \KL(q_k \| p_{\mathrm{Boltz}})
+  \leq (1 - \gamma)^k\, \KL(p_\theta \| p_{\mathrm{Boltz}}),
+\end{equation}
+where $\gamma$ is the spectral gap of the transition matrix.  Near $T_c$,
+$\gamma \sim L^{-z}$ with dynamic critical exponent $z \approx 2$ for
+single-site Gibbs and $z \approx 0.25$ for Wolff, so the contraction per
+sweep is slow for Gibbs but fast for Wolff.
+
+The problem is that $\Fvar[q]$ is \emph{not computable}: evaluating
+$\ln q(\bm{\sigma})$ requires the intractable sum over all $\bm{z}$.  The
+hierarchy of bounds is therefore
+\begin{equation}
+  \Ftrue
+  \;\leq\; \Fvar[q]
+  \;\leq\; \Fvar[p_\theta]
+  \;=\; \tilde{F},
+  \label{eq:bound-hierarchy}
+\end{equation}
+where the gap $\Fvar[p_\theta] - \Fvar[q] > 0$ is a real improvement that
+the evaluable bound $\tilde{F}$ cannot capture.  The role of
+$\beta$-annealing, introduced next, is precisely to make this hidden
+improvement visible.
+
+\paragraph{Resolution: $\beta$-annealing.}
+To obtain a non-trivial bound, the transition kernels must target
+distributions at \emph{intermediate} temperatures, not the physical
+temperature.  This is the standard annealed importance sampling (AIS)
+construction~\cite{neal2001ais}, here combined with a learned base.
+
+Define a temperature schedule $0 < \beta_1 < \beta_2 < \cdots <
+\beta_K = \beta$ and intermediate (unnormalised) distributions
+$\tilde{\pi}_k(\bm{x}) = e^{-\beta_k E(\bm{x})}$.  Set
+$\tilde{\pi}_0(\bm{x}) = p_\theta(\bm{x})$ (the learned base, which is
+normalised).  The generative process is:
+\begin{enumerate}
+  \item Sample $\bm{x}^{(0)} \sim p_\theta$.
+  \item For $k = 1, \ldots, K$: apply an MCMC kernel $T_k$ that leaves
+    $\pi_k \propto \tilde{\pi}_k$ invariant, producing
+    $\bm{x}^{(k)} \sim T_k(\cdot \mid \bm{x}^{(k-1)})$.
+  \item Output $\bm{\sigma} = \bm{x}^{(K)}$.
+\end{enumerate}
+The AIS log-weight is
+\begin{equation}
+  \ln W = \sum_{k=1}^{K} \ln
+    \frac{\tilde{\pi}_k(\bm{x}^{(k-1)})}{\tilde{\pi}_{k-1}(\bm{x}^{(k-1)})}
+  = \ln \frac{\tilde{\pi}_1(\bm{x}^{(0)})}{p_\theta(\bm{x}^{(0)})}
+  + \sum_{k=2}^{K}
+    \big[-(\beta_k - \beta_{k-1})\, E(\bm{x}^{(k-1)})\big].
+  \label{eq:ais-weight}
+\end{equation}
+The \emph{MCMC kernels do not appear in the weight}---only the energies at
+intermediate configurations and the base log-probability.  This means
+\emph{any} mixing kernel can be used at each step: Gibbs sweeps, Wolff
+cluster updates, or Swendsen--Wang, without needing to evaluate their
+(potentially intractable) transition probabilities.
+
+By Jensen's inequality applied to the identity
+$\E[W] = Z / Z_0$~\cite{neal2001ais,jarzynski1997}, the bound is
+\begin{equation}
+  \boxed{%
+    \Ftrue \leq -T\, \E[\ln W]
+    = \E\!\Big[
+      -T \ln \frac{\tilde{\pi}_1(\bm{x}^{(0)})}{p_\theta(\bm{x}^{(0)})}
+      + \sum_{k=2}^{K} T(\beta_k - \beta_{k-1})\, E(\bm{x}^{(k-1)})
+    \Big].
+  }
+  \label{eq:ais-bound}
+\end{equation}
+This is a rigorous upper bound on $\Ftrue$ for any number of annealing
+steps $K$, any temperature schedule, and any choice of MCMC kernels.
+Crucially, the AIS bound sits between the invisible improvement and the
+trivialised bound, refining the hierarchy~\eqref{eq:bound-hierarchy}:
+\begin{equation}
+  \Ftrue
+  \;\leq\; \Fvar[q_K]
+  \;\leq\; \tilde{F}_{\mathrm{AIS}}(K)
+  \;\leq\; \cdots
+  \;\leq\; \tilde{F}_{\mathrm{AIS}}(1)
+  \;\leq\; \Fvar[p_\theta].
+  \label{eq:ais-hierarchy}
+\end{equation}
+The AIS bound makes the hidden improvement of the MCMC
+steps~\eqref{eq:fvar-contraction} partially visible, with the gap
+$\tilde{F}_{\mathrm{AIS}}(K) - \Fvar[q_K]$ controlled by the variance of
+$\ln W$.
+
+\paragraph{Role of the learned base.}
+In standard AIS, the base distribution is simple (e.g., uniform, with
+$\tilde{\pi}_0 = 1$ and $Z_0 = 2^N$), requiring many temperature steps to
+bridge the gap to $p_{\mathrm{Boltz}}$.  Replacing the uniform base with a
+learned autoregressive model $p_\theta$ that already approximates
+$p_{\mathrm{Boltz}}$ dramatically reduces the number of annealing steps
+needed.  If $p_\theta$ is perfect, $K = 0$ suffices and the bound reduces
+to $\Fvar[p_\theta] = \Ftrue$.  In practice, a moderate $K$ (a few Wolff
+sweeps across a short temperature range) suffices to correct the entropy
+deficit that $p_\theta$ alone cannot resolve.
+
+\paragraph{Choice of MCMC kernel.}
+Since the kernel does not appear in the weight, the only criterion is
+\emph{mixing efficiency}.  Near $T_c$, the Wolff cluster algorithm has
+dynamic critical exponent $z \approx 0.25$, compared to $z \approx 2$ for
+single-site Gibbs.  This makes Wolff the natural choice: each annealing
+step thermalises the system efficiently, keeping the variance of $\ln W$
+low with fewer steps.
+
+\paragraph{Training.}
+The bound~\eqref{eq:ais-bound} is minimised with respect to $\theta$ alone.
+Since the sampling distribution depends on $\theta$ through $p_\theta$
+(and indirectly through the MCMC chain), the gradient is a REINFORCE
+estimator:
+\begin{equation}
+  \nabla_\theta \tilde{F}
+  = \E\!\Big[
+    \big(\tilde{F}_{\mathrm{local}} - b\big)\,
+    \nabla_\theta \ln p_\theta(\bm{x}^{(0)})
+  \Big],
+  \label{eq:ais-reinforce}
+\end{equation}
+where $\tilde{F}_{\mathrm{local}} = -T \ln W$ is the per-sample bound
+estimand and $b$ is a learned baseline.  This is identical in form
+to~\eqref{eq:reinforce}.  The MCMC kernels are not differentiated through;
+they are treated as fixed, non-trainable layers.
+
+\paragraph{Entropy increase.}
+The variational distribution $q(\bm{\sigma})$ is the marginal of the AIS
+chain, which is a convolution of $p_\theta$ with $K$ MCMC kernels at
+progressively higher $\beta$.  Each kernel broadens the distribution, so
+\begin{equation}
+  H[q] \geq H[p_\theta],
+\end{equation}
+with the gap growing with $K$.  The $\beta$-annealing injects entropy
+\emph{gradually}: at low $\beta_k$ (high temperature), the MCMC kernels
+are highly stochastic and inject substantial entropy; at high $\beta_k$
+(near the physical temperature), they make only small, targeted
+corrections.  This graduated approach avoids the all-or-nothing character
+of a single MCMC step at the target temperature.
+
+\paragraph{Interpolation between variational and MCMC.}
+The construction provides a smooth interpolation:
+\begin{itemize}
+  \item $K = 0$: pure variational ansatz, $\tilde{F} = \Fvar[p_\theta]$.
+  \item $K$ moderate: learned base + short AIS correction.
+  \item $K \to \infty$ with mixing: $\tilde{F} \to \Ftrue$ regardless of
+    $p_\theta$.
+\end{itemize}
+The learned base reduces the number of annealing steps needed for a given
+accuracy, while the AIS correction patches the entropy deficit that the
+base alone cannot resolve.  This is the key advantage over both pure
+variational methods (which are entropy-limited) and pure AIS (which
+requires many steps from a simple base).
+
+\paragraph{Effect on training dynamics.}
+A crucial consequence of the $\beta$-annealing is that it changes the
+\emph{optimisation landscape} for $\theta$.  The AIS objective
+$\tilde{F}_{\mathrm{AIS}}(\theta) = \E[-T \ln W]$ is a different function
+of $\theta$ than $\Fvar[p_\theta]$, and minimising it yields a different
+optimal $\theta^*$.
+
+In the pure variational setting ($K = 0$), the REINFORCE reward for a
+sample $\bm{z}$ is $r(\bm{z}) = E(\bm{z}) + T \ln p_\theta(\bm{z})$.
+A sample that happens to land on a low-energy configuration receives a
+large negative reward, gets upweighted, and the positive feedback loop of
+Sec.~\ref{sec:mode-collapse} drives mode collapse.  With $\beta$-annealing,
+the reward becomes
+\begin{equation}
+  r_{\mathrm{AIS}}(\bm{z})
+  = -T \ln W
+  = -T \ln p_\theta(\bm{z})
+  + \sum_{k} T \Delta\beta_k\, E(\bm{x}^{(k-1)}),
+  \label{eq:ais-reward}
+\end{equation}
+which depends on the \emph{entire annealing trajectory}, not just
+$\bm{z}$.  A ``bad'' starting configuration (high energy, wrong structure)
+can still produce a good trajectory if the MCMC steps correct it.  The
+reward is smoothed by the chain.
+
+This changes what $p_\theta$ needs to learn.  In the pure variational
+setting, $p_\theta$ must simultaneously capture both the energy and the
+entropy of $p_{\mathrm{Boltz}}$---a task at which REINFORCE fails because
+the mode-seeking reverse KL sacrifices entropy.  In the AIS setting,
+$p_\theta$ need only provide a good \emph{proposal distribution} for the
+annealing chain: the MCMC steps handle the energy correction.  A
+high-entropy $p_\theta$ that roughly captures the correlation structure is
+rewarded, because diverse starting points lead to better chain coverage.
+
+The mechanism is variance reduction.  The per-sample reward variance
+$\mathrm{Var}[\ln W]$ decreases with $K$: more annealing steps thermalise
+bad samples, reducing the spread of rewards.  Lower variance produces a
+more uniform gradient signal across samples, preventing $p_\theta$ from
+over-concentrating on a few low-energy modes.  The number of annealing
+steps $K$ thus serves as a tunable knob that trades compute for training
+stability.
+
+In summary, the $\beta$-annealing breaks the REINFORCE mode collapse
+feedback loop by changing the role of $p_\theta$ from ``approximate
+$p_{\mathrm{Boltz}}$ alone'' to ``provide a good starting point for the
+annealing chain''---a fundamentally easier optimisation problem.
+
+\paragraph{Alternative base: tensor train / matrix product state.}
+The preceding discussion raises the question of what parameterisation is
+best suited for a high-entropy base distribution.  A natural candidate is
+the \emph{tensor train} (TT) decomposition, known in physics as a
+\emph{matrix product state} (MPS).  For $N$ binary spins, the TT
+represents the distribution as
+\begin{equation}
+  p(\bm{\sigma})
+  = \mathrm{Tr}\!\big[
+    A_1(\sigma_1)\, A_2(\sigma_2) \cdots A_N(\sigma_N)
+  \big],
+  \label{eq:tt-distribution}
+\end{equation}
+where each $A_i(\sigma_i)$ is a $D \times D$ matrix and $D$ is the
+\emph{bond dimension}.  Like the autoregressive network, the TT provides
+exact log-probabilities (computable in $O(ND^2)$ by matrix multiplication)
+and exact sampling (via a left-to-right sweep using the chain rule).  In
+fact, the TT \emph{is} an autoregressive model: the conditional
+$p(\sigma_i \mid \sigma_{<i})$ is determined by the left environment
+contracted with $A_i$ and a right normalisation factor.
+
+The key advantage of the TT as a base for the $\beta$-annealed framework
+is threefold:
+\begin{enumerate}
+  \item \textbf{Implicit entropy regularisation.}
+    The mutual information across any bond of the TT is bounded by
+    $\ln D$.  A mode-collapsed distribution---concentrated on a few
+    configurations---requires high mutual information across cuts, which
+    demands large $D$.  At moderate $D$, the TT \emph{cannot}
+    mode-collapse: the bond dimension imposes a structural upper bound on
+    how peaked the distribution can be.  In contrast, an autoregressive
+    neural network is a universal approximator that can represent
+    arbitrarily concentrated distributions, with no built-in safeguard
+    against mode collapse.
+
+  \item \textbf{DMRG training.}
+    The TT admits optimisation by the density matrix renormalisation group
+    (DMRG), which sweeps through the chain optimising one tensor core at a
+    time via a local least-squares or eigenvalue problem.  This is
+    \emph{not} REINFORCE: there is no high-variance score-function
+    estimator, no positive feedback loop, and no mode collapse.  The
+    convergence is stable and well understood.  (If the TT were trained
+    with REINFORCE, it would mode-collapse just like an AR network---the
+    advantage is that the TT admits a better optimiser.)
+
+  \item \textbf{Bond dimension controls the effective temperature.}
+    At $D = 1$, the TT is a product distribution (independent spins),
+    which has maximum entropy $N \ln 2$.  As $D$ increases, the TT can
+    represent progressively longer-range correlations, up to a correlation
+    length $\xi_{\mathrm{MPS}} \sim \ln D$ (for a 2D system mapped to 1D).
+    Choosing $D$ such that $\xi_{\mathrm{MPS}} \approx \xi(T_{\mathrm{eff}})$
+    gives a base distribution that naturally approximates the Boltzmann
+    distribution at an effective temperature $T_{\mathrm{eff}} > T_c$.
+    The $\beta$-annealing chain then cools from $T_{\mathrm{eff}}$ to the
+    physical temperature, building the long-range correlations that $D$
+    cannot capture.
+\end{enumerate}
+
+The main limitation is the 1D structure: for a 2D $L \times L$ lattice
+mapped to 1D via a snake ordering, the entanglement entropy across a cut
+scales as $O(L)$, requiring $D \sim e^{O(L)}$ for exact representation at
+$T_c$.  At moderate $D$, the TT captures only short-range correlations---
+but this is precisely the regime where it serves as a high-temperature base
+for the AIS chain.  The bond dimension $D$ plays the same role as the
+effective temperature $T_{\mathrm{eff}}$: it determines how much of the
+physics $p_\theta$ captures versus how much the annealing chain must supply.
+
+\subsection{Adding bijective layers: stochastic discrete normalizing flows}
+\label{sec:stochastic-nf}
+
+The $\beta$-annealed ansatz of Sec.~\ref{sec:markov-corrected} can be
+strengthened by inserting bijective coupling layers between the MCMC steps.
+Adapting the continuous stochastic normalizing flows of
+Wu et al.~\cite{wu2020snf}, the generative process becomes
+\begin{equation}
+  \bm{z} \sim p_\theta(\bm{z}),
+  \qquad
+  \bm{\sigma}' = f_\phi(\bm{z}),
+  \qquad
+  \bm{\sigma}' \xrightarrow{\text{AIS}} \bm{\sigma},
+  \label{eq:snf-generative}
+\end{equation}
+where the AIS chain starts from the flow output $\bm{\sigma}'$ rather than
+directly from $\bm{z}$.  The bijective flow contributes no additional terms
+to the AIS log-weight---its ``Jacobian'' is~1 on a finite set---but it
+rearranges probability mass \emph{deterministically}, lowering
+$\E[E(\bm{\sigma}')]$ at zero variance cost.
+
+More generally, bijective coupling layers and $\beta$-annealed MCMC
+steps can be freely interleaved:
+\begin{equation}
+  \bm{z}
+  \;\xrightarrow{f_\phi}\;
+  \bm{x}^{(0)}
+  \;\xrightarrow{T_1 \text{ at } \beta_1}\;
+  \bm{x}^{(1)}
+  \;\xrightarrow{g^{(1)}_\phi}\;
+  \bm{x}^{(1)}
+  \;\xrightarrow{T_2 \text{ at } \beta_2}\;
+  \cdots
+  \;\xrightarrow{T_K \text{ at } \beta}\;
+  \bm{\sigma},
+\end{equation}
+with the AIS log-weight~\eqref{eq:ais-weight} receiving contributions only
+from the $\beta$-annealing ratios; the bijective layers are transparent.
+
+The three components play distinct roles in the bound:
+\begin{equation}
+  \tilde{F}
+  = \underbrace{\E[E(\bm{\sigma})]}_{\substack{
+    \text{flow lowers,}\\
+    \text{AIS corrects}}}
+  \;\underbrace{- T\, H[p_\theta]}_{\substack{
+    \text{AR base}\\
+    \text{sets entropy}}}
+  \;\underbrace{+ T\, \E[\text{AIS overhead}]}_{\substack{
+    \text{annealing injects entropy}\\
+    \text{at variance cost}}}.
+  \label{eq:snf-three-terms}
+\end{equation}
+The bijective flow reduces the first term without affecting the other two.
+The $\beta$-annealing reduces the gap between the base entropy and the
+target entropy, at the cost of increasing the third term.  The optimal
+architecture uses the flow to handle what it can (energy rearrangement)
+and the annealing to handle what only it can (entropy injection).
+
+\paragraph{Training.}
+The gradients decompose cleanly across the parameter groups:
+\begin{itemize}
+  \item $\nabla_\theta$ (AR base): REINFORCE, as
+    in~\eqref{eq:ais-reinforce}.
+  \item $\nabla_\phi$ (bijective flow): STE through the coupling layers, as
+    in~\eqref{eq:grad-phi}.  The flow gradient does not involve REINFORCE
+    and does not depend on the MCMC kernels.
+\end{itemize}
+Only $\theta$ and $\phi$ are trained---the MCMC kernels and $\beta$-schedule
+are fixed, non-trainable components that inject entropy for free.
+
+\subsection{$k$-to-1 surjections via symmetry}
+\label{sec:symmetry-surjection}
+
+A complementary approach exploits the known symmetries of the target
+distribution to construct surjective maps with small, tractable fibers.
+
+\paragraph{General construction.}
+Let $G$ be a finite symmetry group of the Hamiltonian:
+$E(g \cdot \bm{\sigma}) = E(\bm{\sigma})$ for all $g \in G$, so that
+$p_{\mathrm{Boltz}}(g \cdot \bm{\sigma}) =
+p_{\mathrm{Boltz}}(\bm{\sigma})$.
+Given a bare autoregressive model $p_\theta^{\mathrm{AR}}(\bm{z})$ and a
+$G$-equivariant flow $f_\phi$, define the $G$-symmetrised distribution
+\begin{equation}
+  q(\bm{\sigma})
+  = \frac{1}{|G|} \sum_{g \in G}
+    p_\theta^{\mathrm{AR}}\!\big(f_\phi^{-1}(g \cdot \bm{\sigma})\big).
+  \label{eq:G-symmetrised}
+\end{equation}
+This is a $|G|$-to-1 surjection from the ``labeled'' space (where the
+orientation of $\bm{\sigma}$ relative to the lattice matters) to the
+``unlabeled'' quotient.  The log-probability is evaluated exactly via
+\begin{equation}
+  \ln q(\bm{\sigma})
+  = \mathrm{logsumexp}_{g \in G}\!\big(
+    \ln p_\theta^{\mathrm{AR}}(f_\phi^{-1}(g \cdot \bm{\sigma}))
+  \big) - \ln |G|.
+  \label{eq:G-logprob}
+\end{equation}
+Since each term in the logsumexp is an exact autoregressive log-probability,
+$\ln q(\bm{\sigma})$ is exact, and the variational bound
+$\Fvar[q] \geq \Ftrue$ is rigorous.
+
+\paragraph{The $\mathbb{Z}_2$ case.}
+The symmetrisation~\eqref{eq:z2-base} already used for the spin-flip
+symmetry is the special case $G = \mathbb{Z}_2 = \{e, -\mathbb{1}\}$ with
+$|G| = 2$.  The logsumexp is over 2 terms and is trivially cheap.
+
+\paragraph{Lattice symmetries.}
+For the square-lattice Ising model with periodic boundary conditions, the
+full space group is
+\begin{equation}
+  G = \underbrace{\mathbb{Z}_L \times \mathbb{Z}_L}_{\text{translations}}
+  \;\rtimes\; \underbrace{D_4}_{\text{point group}}
+  \;\times\; \underbrace{\mathbb{Z}_2}_{\text{spin flip}},
+\end{equation}
+with $|G| = L^2 \times 8 \times 2 = 16 L^2$.  For an $L = 32$ lattice,
+$|G| = 16{,}384$.  Evaluating~\eqref{eq:G-logprob} requires $|G|$ forward
+passes of the inverse flow and the autoregressive network, which is
+expensive but embarrassingly parallel.  In practice, one may use a subgroup
+(e.g., translations only, $|G| = L^2 = 1024$) to balance cost and benefit.
+
+\paragraph{Entropy gain.}
+Unlike the bijective flow alone, the $G$-symmetrised
+distribution~\eqref{eq:G-symmetrised} has entropy
+\begin{equation}
+  H[q] = H[p_\theta^{\mathrm{AR}}]
+  + \underbrace{\Delta H_G}_{\geq\, 0,\;\leq\, \ln|G|},
+\end{equation}
+where $\Delta H_G$ is the entropy gained from symmetrisation.  The gain is
+maximal ($\Delta H_G = \ln |G|$) when the $|G|$ copies of $\bm{z}$-space
+are disjoint in probability (i.e., $p_\theta^{\mathrm{AR}}$ spontaneously
+breaks the symmetry), and zero when $p_\theta^{\mathrm{AR}}$ is already
+$G$-invariant.  At $T_c$, where the Boltzmann distribution is exactly
+$G$-invariant, the symmetrisation allows $p_\theta^{\mathrm{AR}}$ to
+concentrate on one symmetry sector while the sum restores the full symmetry,
+potentially yielding up to $\ln |G|$ bits of additional entropy.
+
+\paragraph{Combining both approaches.}
+The stochastic layers (Sec.~\ref{sec:stochastic-nf}) and the symmetry
+surjection are complementary: the former injects entropy through noise, the
+latter through symmetry averaging.  They can be composed: use a
+$G$-symmetrised stochastic normalizing flow, gaining entropy from both
+sources while maintaining a rigorous bound.
+
+%======================================================================
 \section{Comparison of approaches}
 \label{sec:comparison}
 %======================================================================
@@ -1289,6 +1937,12 @@ ELBO + importance sampling
   & Asymptotically & Estimated & High \\
 \textbf{Discrete NF + AR base}
   & \textbf{Yes} & \textbf{Exact} & \textbf{High (learned bijection)} \\
+\textbf{AR + $\beta$-annealing (AIS)}
+  & \textbf{Yes} & \textbf{Via AIS weight} & \textbf{High (AR + MCMC)} \\
+\textbf{NF + $\beta$-annealing}
+  & \textbf{Yes} & \textbf{Via AIS weight} & \textbf{Higher (bijection + MCMC)} \\
+\textbf{$G$-symmetrised NF}
+  & \textbf{Yes} & \textbf{Exact (logsumexp)} & \textbf{High + symmetry} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1611,6 +2265,25 @@ A spin-glass perspective,''
 \textit{Proc.\ Natl.\ Acad.\ Sci.\ USA}\ \textbf{121}, e2311810121
 (2024).
 [arXiv:2308.14085]
+
+\bibitem{neal2001ais}
+R.~M.~Neal,
+``Annealed importance sampling,''
+\textit{Stat.\ Comput.}\ \textbf{11}, 125--139 (2001).
+[arXiv:physics/9803008]
+
+\bibitem{wu2020snf}
+H.~Wu, J.~K\"ohler, and F.~No\'e,
+``Stochastic normalizing flows,''
+in \textit{Advances in Neural Information Processing Systems~33}
+(NeurIPS 2020), pp.~5933--5944.
+[arXiv:2002.06707]
+
+\bibitem{jarzynski1997}
+C.~Jarzynski,
+``Nonequilibrium equality for free energy differences,''
+\textit{Phys.\ Rev.\ Lett.}\ \textbf{78}, 2690--2693 (1997).
+[arXiv:cond-mat/9610209]
 
 \end{thebibliography}
 
