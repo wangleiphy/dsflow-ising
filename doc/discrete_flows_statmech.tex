@@ -2278,6 +2278,45 @@ recovers the full Haar hierarchy.  The Haar-basis AR model makes this
 multiscale structure explicit and allows weight sharing across levels,
 which the flat coupling-layer stack does not.
 
+\paragraph{Practical assessment: concentration at the finest level.}
+The token count at each level is $1 + 3 + 12 + \cdots + 3(L/2)^2 = L^2$.
+The finest level alone contributes $3(L/2)^2 = 3L^2/4$, i.e.\ \emph{75\%
+of all degrees of freedom}, independent of~$L$.  The coarser levels
+($s_0, d_1, \ldots, d_{n-2}$) together account for only $L^2/4$ variables.
+Consequently, the multi-scale decomposition does not reduce the
+dimensionality of the hard modelling problem---it reorganises it.
+
+The value of the Haar basis is therefore not in simplifying the finest
+level, but in providing \emph{structured conditioning context}: when
+modelling $p(\bm{d}^{(0)} \mid \text{coarser levels})$, the coarse
+variables supply a compressed summary of the global domain structure.
+For small lattices ($L \leq 32$), a flat MADE with sufficient hidden
+units can capture the same correlations; the Haar basis becomes
+advantageous at large~$L$ where the correlation length at~$T_c$ exceeds
+the effective receptive field of a flat autoregressive model.
+
+The multi-scale decomposition is also valuable as a \emph{diagnostic}:
+the scale-by-scale conditional entropy
+$H(\bm{d}^{(k)} \mid \text{coarser levels})$ reveals which length
+scales carry the most uncertainty, providing a direct probe of the
+RG structure that flat models do not offer.
+
+A reference implementation of the bijective Haar transform for
+$\{+1,-1\}$ spins is provided in \texttt{dsflow\_ising/multiscale.py}.
+
+\paragraph{Connection to multi-scale autoregressive models in vision.}
+The coarse-to-fine autoregressive factorisation~\eqref{eq:haar-ar} is
+closely related to the Visual Autoregressive Modeling (VAR)
+framework~\cite{tian2024var}, which replaces next-token prediction with
+next-scale prediction for image generation.  VAR uses a multi-scale
+VQVAE tokeniser with additive residuals in continuous feature space;
+the Haar basis provides the discrete analogue, with multiplicative
+residuals that keep all variables in $\{+1,-1\}$.  The Variational
+Lossy Autoencoder~\cite{chen2017vlae} provides a complementary
+perspective: by limiting the autoregressive decoder's receptive field,
+it forces global information into the latent code---analogous to how
+the Haar hierarchy forces long-range structure into the coarse levels.
+
 %======================================================================
 \section{Suggested numerical experiments}
 \label{sec:experiments}
@@ -2615,6 +2654,22 @@ C.~Jarzynski,
 ``Nonequilibrium equality for free energy differences,''
 \textit{Phys.\ Rev.\ Lett.}\ \textbf{78}, 2690--2693 (1997).
 [arXiv:cond-mat/9610209]
+
+\bibitem{tian2024var}
+K.~Tian, Y.~Jiang, Z.~Yuan, B.~Peng, and L.~Wang,
+``Visual autoregressive modeling: Scalable image generation via
+next-scale prediction,''
+in \textit{Advances in Neural Information Processing Systems~37}
+(NeurIPS 2024).
+[arXiv:2404.02905]
+
+\bibitem{chen2017vlae}
+X.~Chen, D.~P.~Kingma, T.~Salimans, Y.~Duan, P.~Dhariwal,
+J.~Schulman, I.~Sutskever, and P.~Abbeel,
+``Variational lossy autoencoder,''
+in \textit{International Conference on Learning Representations}
+(ICLR 2017).
+[arXiv:1611.02731]
 
 \end{thebibliography}
 
