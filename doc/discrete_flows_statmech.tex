@@ -1948,6 +1948,337 @@ ELBO + importance sampling
 \end{table}
 
 %======================================================================
+\section{Haar wavelet basis for the 2D Ising model}
+\label{sec:haar}
+%======================================================================
+
+The autoregressive models of the preceding sections factorise the
+distribution over a 1D ordering of the lattice sites.  Any such ordering
+maps the 2D lattice to a 1D chain, introducing long-range dependencies:
+nearest neighbours on the lattice can be $O(L)$ apart in the 1D sequence.
+A more natural approach is to work in a \emph{multiscale} basis that
+respects the 2D structure.  The Haar wavelet provides a concrete, lossless
+change of variables from spins to hierarchical coarse/detail coefficients,
+with clean physical properties.
+
+\subsection{Binary Haar wavelet transform}
+\label{sec:haar-transform}
+
+The standard Haar wavelet acts on real-valued signals.  For binary spins
+$\sigma \in \{+1, -1\}$, the natural discrete analogue replaces
+addition/subtraction with multiplication.
+
+\paragraph{One level, 2$\times$2 block.}
+Consider a $2 \times 2$ block of spins:
+\begin{equation}
+  \begin{pmatrix} \sigma_{11} & \sigma_{12} \\
+                   \sigma_{21} & \sigma_{22} \end{pmatrix}
+  \;\longleftrightarrow\;
+  \begin{cases}
+    c   = \sigma_{11}
+      & \text{(coarse: anchor spin)}, \\
+    d_1 = \sigma_{11}\,\sigma_{12}
+      & \text{(horizontal detail)}, \\
+    d_2 = \sigma_{11}\,\sigma_{21}
+      & \text{(vertical detail)}, \\
+    d_3 = \sigma_{11}\,\sigma_{22}
+      & \text{(diagonal detail)}.
+  \end{cases}
+  \label{eq:haar-block}
+\end{equation}
+All four variables are binary $\{+1,-1\}$, and the map is lossless:
+$\sigma_{12} = c\,d_1$, $\sigma_{21} = c\,d_2$,
+$\sigma_{22} = c\,d_3$.  The detail variables $d_1, d_2, d_3$ are
+\emph{bond variables}: $d_i = +1$ when the two spins are aligned,
+$d_i = -1$ when anti-aligned.
+
+\paragraph{Recursive application on a $2^n \times 2^n$ lattice.}
+Apply the $2 \times 2$ transform to the full lattice, grouping spins into
+non-overlapping blocks.  The coarse variables $c$ form a
+$2^{n-1} \times 2^{n-1}$ lattice; the detail variables
+$(d_1, d_2, d_3)$ form a $3 \times 2^{n-1} \times 2^{n-1}$ array.
+Apply the same transform recursively to the coarse lattice.  After $n$
+levels:
+\begin{itemize}
+  \item Level $n$ (coarsest): 1 coarse variable $c^{(n)}$.
+  \item Level $k$ ($0 \leq k \leq n-1$): $3 \times 4^{n-1-k}$ detail
+    variables $\bm{d}^{(k)}$, capturing the internal structure of each
+    $2 \times 2$ block at scale~$k$.
+\end{itemize}
+The total variable count is $1 + 3 \sum_{j=0}^{n-1} 4^j = 4^n = N$.
+The transform is a bijection $\{+1,-1\}^N \to \{+1,-1\}^N$.
+
+\paragraph{Forward transform (spins $\to$ wavelet coefficients).}
+\begin{enumerate}
+  \item Set $\bm{s}^{(0)} \leftarrow \bm{\sigma}$ (the $2^n \times 2^n$
+    spin array).
+  \item For $k = 0, 1, \ldots, n-1$:
+    \begin{enumerate}
+      \item Partition $\bm{s}^{(k)}$ into non-overlapping $2 \times 2$
+        blocks.
+      \item For each block, compute $(c, d_1, d_2, d_3)$
+        via~\eqref{eq:haar-block}.
+      \item Store $\bm{d}^{(k)}$ (the detail array at level~$k$).
+      \item Set $\bm{s}^{(k+1)} \leftarrow$ the array of coarse
+        variables~$c$.
+    \end{enumerate}
+  \item Output $c^{(n)} = \bm{s}^{(n)}$ and
+    $\{\bm{d}^{(0)}, \ldots, \bm{d}^{(n-1)}\}$.
+\end{enumerate}
+
+\paragraph{Inverse transform (wavelet coefficients $\to$ spins).}
+\begin{enumerate}
+  \item Set $\bm{s}^{(n)} \leftarrow c^{(n)}$.
+  \item For $k = n-1, n-2, \ldots, 0$:
+    \begin{enumerate}
+      \item For each block at level~$k$, recover the four spins from the
+        coarse variable $c$ (from $\bm{s}^{(k+1)}$) and the detail
+        variables $(d_1, d_2, d_3)$ (from $\bm{d}^{(k)}$):
+        $\sigma_{\mathrm{TL}} = c$,\;
+        $\sigma_{\mathrm{TR}} = c\,d_1$,\;
+        $\sigma_{\mathrm{BL}} = c\,d_2$,\;
+        $\sigma_{\mathrm{BR}} = c\,d_3$.
+      \item Assemble into $\bm{s}^{(k)}$.
+    \end{enumerate}
+  \item Output $\bm{\sigma} = \bm{s}^{(0)}$.
+\end{enumerate}
+
+\subsection{Energy decomposition in the Haar basis}
+\label{sec:haar-energy}
+
+The Ising energy $E = -J \sum_{\langle ij \rangle} \sigma_i \sigma_j$
+decomposes into contributions from each level of the hierarchy.
+
+\paragraph{Intra-block energy.}
+For a $2 \times 2$ block at level~$k$, the four nearest-neighbour bonds
+\emph{within} the block are
+\begin{align}
+  \sigma_{11}\sigma_{12} &= d_1, &
+  \sigma_{11}\sigma_{21} &= d_2, \nonumber\\
+  \sigma_{12}\sigma_{22} &= d_1 d_3, &
+  \sigma_{21}\sigma_{22} &= d_2 d_3.
+\end{align}
+The intra-block energy is
+\begin{equation}
+  E_{\mathrm{intra}} = -J\big(d_1 + d_2 + d_1 d_3 + d_2 d_3\big)
+  = -J(d_1 + d_2)(1 + d_3).
+  \label{eq:haar-intra}
+\end{equation}
+The coarse variable $c$ \emph{does not appear}: the intra-block energy
+depends only on the detail variables.  This is a consequence of the
+$\mathbb{Z}_2$ symmetry---the energy is invariant under global spin flip,
+and $c$ encodes the absolute orientation that the energy cannot see.
+
+\paragraph{Inter-block energy.}
+Consider two horizontally adjacent blocks $A$ and $B$ at level~$k$, with
+coarse variables $c^A$ and $c^B$ and detail variables
+$(d_1^A, d_2^A, d_3^A)$ and $(d_1^B, d_2^B, d_3^B)$.  The two
+inter-block bonds (connecting the right column of $A$ to the left column
+of $B$) are
+\begin{align}
+  \sigma_{12}^A \sigma_{11}^B &= c^A d_1^A \cdot c^B
+    = (c^A c^B)\, d_1^A, \nonumber\\
+  \sigma_{22}^A \sigma_{21}^B &= c^A d_3^A \cdot c^B d_2^B
+    = (c^A c^B)\, d_3^A d_2^B.
+  \label{eq:haar-inter}
+\end{align}
+The product $c^A c^B$ is a \emph{coarse-level bond variable}: at the next
+level of the hierarchy, it equals the detail variable connecting the two
+parent blocks.  The inter-block energy thus couples detail variables at
+level~$k$ to coarse variables at level~$k+1$, but the coupling is
+\emph{local} (involves only adjacent blocks) and \emph{known analytically}.
+
+\paragraph{Total energy.}
+The full Ising energy decomposes as
+\begin{equation}
+  E(\bm{\sigma}) = \sum_{k=0}^{n-1}
+    \Big[\sum_{\text{blocks at level } k}
+      E_{\mathrm{intra}}^{(k)}(\bm{d}^{(k)})
+    + \sum_{\text{adjacent pairs}}
+      E_{\mathrm{inter}}^{(k)}(\bm{d}^{(k)},\, \bm{c}^{(k+1)})
+    \Big],
+  \label{eq:haar-energy-total}
+\end{equation}
+where each term is local and analytically known.  The coarsest variable
+$c^{(n)}$ does not appear in the energy at all.
+
+\subsection{Autoregressive factorisation in the Haar basis}
+\label{sec:haar-ar}
+
+The Haar wavelet defines a natural coarse-to-fine autoregressive
+factorisation:
+\begin{equation}
+  p(\bm{\sigma})
+  = p(c^{(n)})
+  \times \prod_{k=n-1}^{0}
+    p\!\big(\bm{d}^{(k)} \,\big|\, c^{(n)},\,
+      \bm{d}^{(n-1)}, \ldots, \bm{d}^{(k+1)}\big).
+  \label{eq:haar-ar}
+\end{equation}
+Each factor conditions on all coarser levels.  The log-probability is
+\begin{equation}
+  \ln p(\bm{\sigma})
+  = \ln p(c^{(n)})
+  + \sum_{k=n-1}^{0}
+    \ln p\!\big(\bm{d}^{(k)} \,\big|\, \text{coarser levels}\big),
+  \label{eq:haar-logprob}
+\end{equation}
+which is exact and tractable (a sum of $n$ terms).
+
+\paragraph{Structure of the conditionals.}
+At level~$k$, the conditional $p(\bm{d}^{(k)} \mid \text{coarser levels})$
+is a distribution over $3 \times 2^{n-k-1} \times 2^{n-k-1}$ binary
+variables.  The energy decomposition~\eqref{eq:haar-energy-total} shows
+that this conditional depends on:
+\begin{enumerate}
+  \item The \emph{intra-block} energy at level~$k$: depends only on
+    $\bm{d}^{(k)}$, local within each block.
+  \item The \emph{inter-block} energy at level~$k$: couples detail
+    variables in adjacent blocks, with coefficients determined by the
+    coarse variables $\bm{c}^{(k+1)}$ (which are known from the coarser
+    levels).
+\end{enumerate}
+Crucially, the inter-block coupling is \emph{short-range}: it connects
+only nearest-neighbour blocks.  Conditioned on the coarse variables, the
+detail variables at level~$k$ form a 2D system with local interactions---
+a much simpler object than the original $N$-spin Ising model.
+
+\paragraph{The coarsest level.}
+For a $\mathbb{Z}_2$-symmetric system, $p(c^{(n)}) = \tfrac{1}{2}$
+(uniform over $\{+1, -1\}$), contributing exactly $\ln 2$ to the entropy.
+This single bit of entropy is \emph{structurally guaranteed}---it cannot
+be lost to mode collapse.
+
+\paragraph{Within-block factorisation.}
+The three detail variables $(d_1, d_2, d_3)$ within each block are
+correlated (through the intra-block energy~\eqref{eq:haar-intra}).  They
+can be factorised autoregressively:
+\begin{equation}
+  p(d_1, d_2, d_3 \mid \text{context})
+  = p(d_1 \mid \text{ctx})\;
+    p(d_2 \mid d_1, \text{ctx})\;
+    p(d_3 \mid d_1, d_2, \text{ctx}),
+  \label{eq:haar-within-block}
+\end{equation}
+where ``context'' denotes the coarse variables and detail variables from
+adjacent blocks.  Each factor is a single binary conditional, parameterised
+by a neural network.
+
+\subsection{Implementation plan}
+\label{sec:haar-implementation}
+
+We describe a concrete implementation for the $2^n \times 2^n$ Ising model.
+
+\paragraph{Architecture: scale-equivariant ConvNet.}
+At each level~$k$, the conditional
+$p(\bm{d}^{(k)} \mid \text{coarser levels})$ is parameterised by a
+convolutional neural network $f_\theta^{(k)}$ that takes as input the
+coarse-level information and outputs the conditional probabilities for the
+detail variables.
+
+At the critical point, the RG fixed-point structure implies that the
+conditional has the \emph{same functional form} at every level (up to
+rescaling).  This motivates \emph{weight sharing}: a single ConvNet
+$f_\theta$ is used at all levels, with the scale index $k$ provided as an
+additional input (e.g., via a scale embedding added to the feature maps).
+This reduces the parameter count from $O(n)$ networks to $O(1)$.
+
+The ConvNet operates on the $2^{n-k-1} \times 2^{n-k-1}$ grid of blocks
+at level~$k$.  Its input channels are:
+\begin{itemize}
+  \item The coarse variables $\bm{c}^{(k+1)}$ (1 channel,
+    $2^{n-k-1} \times 2^{n-k-1}$).
+  \item Upsampled coarser-level information (optional, for capturing
+    longer-range context).
+\end{itemize}
+Its output channels are the parameters of the within-block autoregressive
+conditionals~\eqref{eq:haar-within-block}: 3 logits per block (one for
+each of $d_1$, $d_2$, $d_3$, with $d_2$ and $d_3$ conditioned on
+earlier detail variables via masking).
+
+\paragraph{Sampling algorithm.}
+\begin{enumerate}
+  \item Sample $c^{(n)} \sim \mathrm{Uniform}\{+1, -1\}$.
+  \item For $k = n-1, n-2, \ldots, 0$:
+    \begin{enumerate}
+      \item Compute the coarse array $\bm{c}^{(k+1)}$ from the already-
+        generated coarser levels (via the inverse transform applied down
+        to level $k+1$).
+      \item Run the ConvNet $f_\theta$ on $\bm{c}^{(k+1)}$ (with scale
+        embedding $k$) to obtain logits for $\bm{d}^{(k)}$.
+      \item Sample $\bm{d}^{(k)}$ autoregressively within each block:
+        $d_1 \to d_2 \to d_3$.
+    \end{enumerate}
+  \item Apply the full inverse Haar transform to recover
+    $\bm{\sigma} \in \{+1,-1\}^N$.
+\end{enumerate}
+The total cost is $n$ ConvNet evaluations (one per level), each on a grid
+of decreasing size.  The dominant cost is level~$0$ (finest), which
+operates on a $2^{n-1} \times 2^{n-1}$ grid.
+
+\paragraph{Log-probability computation.}
+Given a spin configuration $\bm{\sigma}$:
+\begin{enumerate}
+  \item Apply the forward Haar transform to obtain
+    $\{c^{(n)}, \bm{d}^{(n-1)}, \ldots, \bm{d}^{(0)}\}$.
+  \item Compute $\ln p(c^{(n)}) = -\ln 2$.
+  \item For $k = n-1, \ldots, 0$: run the ConvNet on $\bm{c}^{(k+1)}$
+    to obtain logits, then evaluate
+    $\ln p(\bm{d}^{(k)} \mid \text{coarser levels})$ as a sum of
+    per-block, per-variable log-probabilities.
+  \item Sum: $\ln p(\bm{\sigma}) = -\ln 2 + \sum_k \ln p(\bm{d}^{(k)}
+    \mid \text{coarser levels})$.
+\end{enumerate}
+This gives an \emph{exact} log-probability, suitable for the variational
+free energy bound or the AIS weight.
+
+\paragraph{Training.}
+The model can be trained by any of the methods discussed in this paper:
+\begin{itemize}
+  \item \textbf{Reverse KL (REINFORCE):} minimise
+    $\Fvar[p_\theta] = \E[E(\bm{\sigma}) + T \ln p_\theta(\bm{\sigma})]$.
+    The hierarchical structure mitigates mode collapse: the coarsest level
+    has fixed entropy $\ln 2$, and the shared ConvNet prevents any single
+    level from collapsing independently.
+  \item \textbf{Forward KL (MLE on MCMC samples):} minimise
+    $-\E_{p_{\mathrm{Boltz}}}[\ln p_\theta(\bm{\sigma})]$.  The
+    coarse-to-fine structure means the network at each level sees
+    \emph{local} detail variables conditioned on coarser context---a
+    simpler learning problem than the flat AR model.
+  \item \textbf{$\beta$-annealing (AIS):} use the Haar-basis AR model as
+    the base $p_\theta$ in the AIS framework of
+    Sec.~\ref{sec:markov-corrected}.  The hierarchical base captures
+    short-range correlations; the AIS chain (with Wolff updates) builds
+    the long-range correlations.
+\end{itemize}
+
+\paragraph{Complexity comparison.}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+& \textbf{Snake-order AR} & \textbf{Haar-basis AR} \\
+\midrule
+Autoregressive depth & $N = L^2$ & $n = \log_2 L$ levels \\
+Conditional range & $O(L)$ & $O(1)$ (local) \\
+$\mathbb{Z}_2$ symmetry & Must be learned & Exact ($c^{(n)}$ decouples) \\
+At $T_c$ & Global dependence & Self-similar across levels \\
+Network evaluations & $N$ (or 1 masked) & $n$ ConvNets \\
+Weight sharing & None & Across all $n$ levels \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Relation to the coupling layers.}
+The checkerboard partition used in the discrete coupling layers
+(Sec.~\ref{sec:coupling}) is precisely one level of the Haar
+decomposition: the $A$ sublattice plays the role of the coarse variables,
+and the $B$ sublattice plays the role of the detail variables.  Stacking
+$n$ coupling layers with progressively coarser checkerboard partitions
+recovers the full Haar hierarchy.  The Haar-basis AR model makes this
+multiscale structure explicit and allows weight sharing across levels,
+which the flat coupling-layer stack does not.
+
+%======================================================================
 \section{Suggested numerical experiments}
 \label{sec:experiments}
 %======================================================================
